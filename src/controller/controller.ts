@@ -1,0 +1,661 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import type { Writable } from "node:stream";
+import { resolveControllerConfig } from "./config.js";
+import { attachStrictJsonlReader, serializeJsonl } from "./jsonl.js";
+import type {
+  AgentSessionControllerConfig,
+  AgentSessionSnapshot,
+  DialogSnapshot,
+  PromptOptions,
+  ResolvedControllerConfig,
+  RpcRecord,
+  RpcResponse,
+  SpawnChild,
+  TurnOutcome,
+  TurnSnapshot,
+  UsageSnapshot,
+} from "./types.js";
+
+interface PendingRequest {
+  command: string;
+  resolve: (response: RpcResponse) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface MutableTurn extends TurnSnapshot {
+  sawAssistant: boolean;
+  interruptedRequested: boolean;
+  resolve: (turn: TurnSnapshot) => void;
+  completion: Promise<TurnSnapshot>;
+}
+
+const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
+const INHERITED_ENV_DENY = [
+  /^PI_SESSION_/,
+  /^PI_(?:MODEL|PROVIDER|REASONING_LEVEL)$/,
+  /^PI_AWARENESS/,
+  /^IS_MOUNTS$/,
+  /^IS_MAP/,
+  /^IS_AWARENESS/,
+  /^IS_CHANGE/,
+  /^IS_CAPTURE/,
+  /^IDEASPACES_CHANGE/,
+];
+
+export class RpcCommandError extends Error {
+  constructor(
+    readonly command: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RpcCommandError";
+  }
+}
+
+export class PersistentRpcController {
+  readonly runId = randomUUID();
+  readonly config: ResolvedControllerConfig;
+
+  private child: ReturnType<typeof spawn> | undefined;
+  private status: AgentSessionSnapshot["status"] = "starting";
+  private sessionId: string | undefined;
+  private sessionFile: string | undefined;
+  private usage: UsageSnapshot | undefined;
+  private stderr = "";
+  private protocolError: string | undefined;
+  private requestSequence = 0;
+  private operationSequence = 0;
+  private pendingRequests = new Map<string, PendingRequest>();
+  private activeTools = new Map<string, string>();
+  private dialogs = new Map<string, DialogSnapshot>();
+  private events: RpcRecord[] = [];
+  private turns: MutableTurn[] = [];
+  private activeTurn: MutableTurn | undefined;
+  private stopReading: (() => void) | undefined;
+  private closePromise: Promise<void> | undefined;
+  private exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
+
+  private constructor(
+    config: ResolvedControllerConfig,
+    private readonly spawnImpl: SpawnChild,
+  ) {
+    this.config = config;
+  }
+
+  static async start(
+    input: AgentSessionControllerConfig,
+    dependencies: { spawn?: SpawnChild } = {},
+  ): Promise<PersistentRpcController> {
+    const controller = new PersistentRpcController(resolveControllerConfig(input), dependencies.spawn ?? spawn);
+    try {
+      await controller.launch();
+      return controller;
+    } catch (error) {
+      await controller.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  snapshot(): AgentSessionSnapshot {
+    return {
+      runId: this.runId,
+      pid: this.child?.pid,
+      cwd: this.config.target,
+      status: this.status,
+      sessionId: this.sessionId,
+      sessionFile: this.sessionFile,
+      activeTools: [...this.activeTools].map(([toolCallId, toolName]) => ({ toolCallId, toolName })),
+      outstandingRequestIds: [...this.pendingRequests.keys()],
+      outstandingDialogs: [...this.dialogs.values()].map((dialog) => ({ ...dialog })),
+      recentEvents: this.events.map((event) => ({ ...event })),
+      turns: this.turns.map(stripTurnInternals),
+      usage: this.usage === undefined ? undefined : { ...this.usage },
+      stderr: this.stderr,
+      protocolError: this.protocolError,
+    };
+  }
+
+  async prompt(message: string, options: PromptOptions = {}): Promise<string> {
+    this.requireUsable();
+    validateMessage(message);
+    if (this.activeTurn && (this.activeTurn.status === "pending" || this.activeTurn.status === "running")) {
+      throw new Error("A turn is already running; use steer or followUp");
+    }
+    const turn = this.createTurn();
+    this.activeTurn = turn;
+    this.status = "running";
+    try {
+      const response = await this.sendRpc({
+        type: "prompt",
+        message,
+        ...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
+      });
+      if (!response.success) {
+        this.finishTurn(turn, "rejected", response.error ?? "Prompt rejected");
+        throw new RpcCommandError("prompt", response.error ?? "Prompt rejected");
+      }
+      if (!isTurnOutcome(turn.status)) turn.status = "running";
+      return turn.operationId;
+    } catch (error) {
+      if (turn.status === "pending" || turn.status === "running") {
+        this.finishTurn(turn, "failed", errorMessage(error));
+      }
+      throw error;
+    }
+  }
+
+  async promptAndWait(message: string, options: PromptOptions = {}): Promise<TurnSnapshot> {
+    const operationId = await this.prompt(message, options);
+    return this.waitForTurn(operationId);
+  }
+
+  async steer(message: string): Promise<void> {
+    this.requireActiveTurn("steer");
+    validateMessage(message);
+    await this.requireSuccess(await this.sendRpc({ type: "steer", message }));
+  }
+
+  async followUp(message: string): Promise<void> {
+    this.requireActiveTurn("follow_up");
+    validateMessage(message);
+    await this.requireSuccess(await this.sendRpc({ type: "follow_up", message }));
+  }
+
+  async waitForTurn(operationId: string, timeoutMs = this.config.limits.settlementTimeoutMs): Promise<TurnSnapshot> {
+    const turn = this.turns.find((candidate) => candidate.operationId === operationId);
+    if (!turn) throw new Error(`Unknown operation: ${operationId}`);
+    if (isTurnOutcome(turn.status)) return stripTurnInternals(turn);
+    return withTimeout(turn.completion, timeoutMs, `Timed out waiting for operation ${operationId}`);
+  }
+
+  async respondToDialog(
+    id: string,
+    response: { value: string } | { confirmed: boolean } | { cancelled: true },
+  ): Promise<void> {
+    this.requireUsable();
+    if (!this.dialogs.has(id)) throw new Error(`Unknown or settled dialog: ${id}`);
+    this.sendRaw({ type: "extension_ui_response", id, ...response });
+    this.dialogs.delete(id);
+    this.status = this.activeTurn ? "running" : "idle";
+  }
+
+  async interrupt(): Promise<TurnSnapshot | undefined> {
+    this.requireUsable(true);
+    const turn = this.activeTurn;
+    if (!turn || isTurnOutcome(turn.status)) return undefined;
+    turn.interruptedRequested = true;
+    try {
+      const clearResponse = await this.sendRpc({ type: "clear_queue" });
+      await this.requireSuccess(clearResponse);
+    } catch {
+      // Abort still has to be attempted when queue clearing fails.
+    }
+    await this.requireSuccess(await this.sendRpc({ type: "abort" }));
+    return this.waitForTurn(turn.operationId);
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = this.closeInternal();
+    return this.closePromise;
+  }
+
+  private async launch(): Promise<void> {
+    const argv = buildPiArgv(this.config);
+    const env = buildChildEnv(process.env, this.config);
+    const child = this.spawnImpl(this.config.launch.command, argv, {
+      cwd: this.config.target,
+      env,
+      shell: false,
+      detached: true,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as ReturnType<typeof spawn>;
+    this.child = child;
+    this.exited = new Promise((resolve) => {
+      child.once("exit", (code, signal) => {
+        resolve({ code, signal });
+        this.handleExit(code, signal);
+      });
+    });
+    child.once("error", (error) => this.failProcess(new Error(`Failed to launch Pi: ${error.message}`)));
+    child.stdin?.on("error", (error) => {
+      if (this.status !== "closing" && this.status !== "closed") {
+        this.failProcess(new Error(`Pi stdin failed: ${error.message}`));
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer | string) => this.appendStderr(chunk));
+    if (!child.stdout || !child.stdin) throw new Error("Pi process did not expose RPC pipes");
+    this.stopReading = attachStrictJsonlReader(
+      child.stdout,
+      this.config.limits.maxLineBytes,
+      (record) => this.handleRecord(record),
+      (error) => this.failProcess(error, true),
+    );
+
+    const response = await this.sendRpc({ type: "get_state" }, this.config.limits.startupTimeoutMs);
+    await this.requireSuccess(response);
+    const state = asObject(response.data, "get_state data");
+    if (typeof state.sessionId !== "string" || state.sessionId === "") {
+      throw new Error("Pi get_state response is missing sessionId");
+    }
+    this.sessionId = state.sessionId;
+    if (typeof state.sessionFile === "string") this.sessionFile = state.sessionFile;
+    this.status = state.isStreaming === true ? "running" : "idle";
+  }
+
+  private async closeInternal(): Promise<void> {
+    if (!this.child) {
+      this.status = "closed";
+      return;
+    }
+    if (this.status === "closed") return;
+    const wasCrashed = this.status === "crashed";
+    this.status = "closing";
+
+    for (const id of this.dialogs.keys()) {
+      try {
+        this.sendRaw({ type: "extension_ui_response", id, cancelled: true });
+      } catch {
+        break;
+      }
+    }
+    this.dialogs.clear();
+
+    if (this.activeTurn && !isTurnOutcome(this.activeTurn.status)) {
+      try {
+        await withTimeout(this.interrupt(), this.config.limits.closeGraceMs, "Turn did not settle before close");
+      } catch {
+        this.finishTurn(this.activeTurn, "interrupted", "Controller closed the running turn");
+      }
+    }
+
+    const child = this.child;
+    child.stdin?.end();
+    let exited = await this.waitForExit(this.config.limits.closeGraceMs);
+    if (!exited && child.pid !== undefined) {
+      signalProcessTree(child.pid, "SIGTERM");
+      exited = await this.waitForExit(this.config.limits.killGraceMs);
+    }
+    if (!exited && child.pid !== undefined) {
+      signalProcessTree(child.pid, "SIGKILL");
+      await this.waitForExit(this.config.limits.killGraceMs);
+    }
+
+    this.stopReading?.();
+    this.stopReading = undefined;
+    const closeError = new Error("Controller closed");
+    this.rejectPending(closeError);
+    this.activeTools.clear();
+    this.status = wasCrashed ? "crashed" : "closed";
+  }
+
+  private createTurn(): MutableTurn {
+    let resolveCompletion!: (turn: TurnSnapshot) => void;
+    const completion = new Promise<TurnSnapshot>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const turn: MutableTurn = {
+      operationId: `${this.runId}:${++this.operationSequence}`,
+      status: "pending",
+      startedAt: new Date().toISOString(),
+      sawAssistant: false,
+      interruptedRequested: false,
+      resolve: resolveCompletion,
+      completion,
+    };
+    this.turns.push(turn);
+    while (this.turns.length > this.config.limits.maxTurns) this.turns.shift();
+    return turn;
+  }
+
+  private finishTurn(turn: MutableTurn, outcome: TurnOutcome, error?: string): void {
+    if (isTurnOutcome(turn.status)) return;
+    turn.status = outcome;
+    turn.settledAt = new Date().toISOString();
+    if (error) turn.error = error;
+    turn.resolve(stripTurnInternals(turn));
+    if (this.activeTurn === turn) this.activeTurn = undefined;
+    if (this.status !== "closing" && this.status !== "closed" && this.status !== "crashed") this.status = "idle";
+  }
+
+  private handleRecord(value: unknown): void {
+    const record = asRecord(value);
+    if (record.type === "response") {
+      this.handleResponse(record);
+      return;
+    }
+    this.pushEvent(record);
+    this.handleEvent(record);
+  }
+
+  private handleResponse(record: RpcRecord): void {
+    if (typeof record.id !== "string" || typeof record.command !== "string" || typeof record.success !== "boolean") {
+      this.failProcess(new Error("Malformed RPC response"), true);
+      return;
+    }
+    const pending = this.pendingRequests.get(record.id);
+    if (!pending) {
+      this.failProcess(new Error(`Unexpected RPC response id: ${record.id}`), true);
+      return;
+    }
+    if (record.command !== pending.command) {
+      this.failProcess(
+        new Error(`RPC response command mismatch for ${record.id}: expected ${pending.command}, got ${record.command}`),
+        true,
+      );
+      return;
+    }
+    this.pendingRequests.delete(record.id);
+    clearTimeout(pending.timer);
+    pending.resolve(record as unknown as RpcResponse);
+  }
+
+  private handleEvent(record: RpcRecord): void {
+    switch (record.type) {
+      case "agent_start":
+      case "turn_start":
+      case "auto_retry_start":
+      case "summarization_retry_scheduled":
+      case "summarization_retry_attempt_start":
+        if (this.status !== "closing") this.status = "running";
+        break;
+      case "message_update":
+        this.updateUsage(record.usage);
+        break;
+      case "message_end":
+        this.captureAssistant(record.message);
+        break;
+      case "tool_execution_start":
+        if (typeof record.toolCallId === "string" && typeof record.toolName === "string") {
+          this.activeTools.set(record.toolCallId, record.toolName);
+        }
+        break;
+      case "tool_execution_end":
+        if (typeof record.toolCallId === "string") this.activeTools.delete(record.toolCallId);
+        break;
+      case "extension_ui_request":
+        this.captureDialog(record);
+        break;
+      case "agent_settled":
+        this.settleActiveTurn();
+        break;
+      default:
+        break;
+    }
+  }
+
+  private captureAssistant(value: unknown): void {
+    const turn = this.activeTurn;
+    if (!turn || isTurnOutcome(turn.status)) return;
+    const message = asObjectOrUndefined(value);
+    if (!message || message.role !== "assistant") return;
+    turn.sawAssistant = true;
+    turn.reply = truncate(extractAssistantText(message.content), this.config.limits.maxReplyChars);
+    if (typeof message.stopReason === "string") turn.stopReason = message.stopReason;
+    this.updateUsage(message.usage);
+  }
+
+  private captureDialog(record: RpcRecord): void {
+    if (typeof record.id !== "string" || typeof record.method !== "string" || !DIALOG_METHODS.has(record.method)) return;
+    this.dialogs.set(record.id, {
+      id: record.id,
+      method: record.method,
+      title: typeof record.title === "string" ? record.title : undefined,
+    });
+    if (this.status !== "closing") this.status = "waiting_for_input";
+  }
+
+  private settleActiveTurn(): void {
+    const turn = this.activeTurn;
+    if (!turn || isTurnOutcome(turn.status)) return;
+    this.activeTools.clear();
+    if (turn.interruptedRequested || turn.stopReason === "aborted") {
+      this.finishTurn(turn, "interrupted");
+    } else if (!turn.sawAssistant) {
+      this.finishTurn(turn, "failed", "Pi settled without a new assistant reply");
+    } else if (turn.stopReason === "error") {
+      this.finishTurn(turn, "failed", turn.reply || "Pi returned an error stop reason");
+    } else {
+      this.finishTurn(turn, "completed");
+    }
+  }
+
+  private pushEvent(record: RpcRecord): void {
+    this.events.push(record);
+    while (this.events.length > this.config.limits.maxRecentEvents) this.events.shift();
+  }
+
+  private updateUsage(value: unknown): void {
+    const usage = asObjectOrUndefined(value);
+    if (!usage) return;
+    const next: UsageSnapshot = {};
+    for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+      if (typeof usage[key] === "number" && Number.isFinite(usage[key])) next[key] = usage[key];
+    }
+    if (typeof usage.cost === "number" || (usage.cost !== null && typeof usage.cost === "object")) next.cost = usage.cost as UsageSnapshot["cost"];
+    this.usage = next;
+  }
+
+  private appendStderr(chunk: Buffer | string): void {
+    this.stderr = truncateTail(this.stderr + chunk.toString(), this.config.limits.maxStderrBytes);
+  }
+
+  private async sendRpc(command: RpcRecord, timeoutMs = this.config.limits.requestTimeoutMs): Promise<RpcResponse> {
+    const id = `req_${++this.requestSequence}`;
+    const fullCommand = { ...command, id };
+    return new Promise<RpcResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Timed out waiting for ${command.type} response`));
+      }, timeoutMs);
+      this.pendingRequests.set(id, { command: command.type, resolve, reject, timer });
+      try {
+        this.sendRaw(fullCommand);
+      } catch (error) {
+        const pending = this.pendingRequests.get(id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingRequests.delete(id);
+          pending.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    });
+  }
+
+  private sendRaw(command: RpcRecord): void {
+    const stdin = this.child?.stdin as Writable | null | undefined;
+    if (!stdin || stdin.destroyed || !stdin.writable) throw new Error("Pi RPC stdin is not writable");
+    stdin.write(serializeJsonl(command, this.config.limits.maxLineBytes));
+  }
+
+  private async requireSuccess(response: RpcResponse): Promise<void> {
+    if (!response.success) throw new RpcCommandError(response.command, response.error ?? `${response.command} failed`);
+  }
+
+  private requireUsable(allowClosing = false): void {
+    if (!this.child) throw new Error("Controller has not started");
+    if (this.status === "crashed") throw new Error(this.protocolError ?? "Pi process crashed");
+    if (this.status === "closed" || (!allowClosing && this.status === "closing")) {
+      throw new Error("Controller is closed");
+    }
+  }
+
+  private requireActiveTurn(command: string): MutableTurn {
+    this.requireUsable();
+    const turn = this.activeTurn;
+    if (!turn || isTurnOutcome(turn.status)) throw new Error(`${command} requires a running turn`);
+    return turn;
+  }
+
+  private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    const error = new Error(`Pi process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+    this.rejectPending(error);
+    if (this.status === "closing" || this.status === "closed") return;
+    this.failProcess(error);
+  }
+
+  private failProcess(error: Error, protocol = false): void {
+    if (this.status === "closed" || this.status === "crashed") return;
+    if (protocol) this.protocolError = error.message;
+    this.status = "crashed";
+    this.rejectPending(error);
+    this.activeTools.clear();
+    this.dialogs.clear();
+    if (this.activeTurn && !isTurnOutcome(this.activeTurn.status)) this.finishTurn(this.activeTurn, "failed", error.message);
+    if (this.child?.pid !== undefined) signalProcessTree(this.child.pid, "SIGKILL");
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+  }
+
+  private async waitForExit(timeoutMs: number): Promise<boolean> {
+    if (!this.child || this.child.exitCode !== null || this.child.signalCode !== null) return true;
+    if (!this.exited) return true;
+    try {
+      await withTimeout(this.exited, timeoutMs, "Process exit timeout");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function buildPiArgv(config: ResolvedControllerConfig): string[] {
+  const argv = [...config.launch.argvPrefix, "--mode", "rpc"];
+  if (config.model) argv.push("--model", config.model);
+  if (config.thinking) argv.push("--thinking", config.thinking);
+  if (config.trust.mode === "explicit") argv.push("--approve");
+  if (config.extensionPaths !== undefined) {
+    argv.push("--no-extensions");
+    for (const path of config.extensionPaths) argv.push("--extension", path);
+  }
+  if (config.skillPaths !== undefined) {
+    for (const path of config.skillPaths) argv.push("--skill", path);
+  }
+  return argv;
+}
+
+export function buildChildEnv(
+  inherited: NodeJS.ProcessEnv,
+  config: ResolvedControllerConfig,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(inherited)) {
+    if (INHERITED_ENV_DENY.some((pattern) => pattern.test(key))) continue;
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  env.PI_AGENT_SESSION_DEPTH = "1";
+  if (config.packageDir) env.PI_PACKAGE_DIR = config.packageDir;
+  if (config.agentDir) env.PI_CODING_AGENT_DIR = config.agentDir;
+  return env;
+}
+
+function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform === "win32") {
+      if (signal === "SIGKILL") spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { shell: false, windowsHide: true });
+      else process.kill(pid, signal);
+    } else {
+      process.kill(-pid, signal);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      // Last-resort direct signal if process-group signaling is unavailable.
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // The process already exited or cannot be signalled by this host.
+      }
+    }
+  }
+}
+
+function asRecord(value: unknown): RpcRecord {
+  const object = asObject(value, "RPC record");
+  if (typeof object.type !== "string" || object.type === "") throw new Error("RPC record is missing type");
+  return object as RpcRecord;
+}
+
+function asObject(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function asObjectOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function extractAssistantText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is { type: "text"; text: string } => {
+      const object = asObjectOrUndefined(part);
+      return object?.type === "text" && typeof object.text === "string";
+    })
+    .map((part) => part.text)
+    .join("");
+}
+
+function stripTurnInternals(turn: MutableTurn): TurnSnapshot {
+  return {
+    operationId: turn.operationId,
+    status: turn.status,
+    startedAt: turn.startedAt,
+    settledAt: turn.settledAt,
+    reply: turn.reply,
+    stopReason: turn.stopReason,
+    error: turn.error,
+  };
+}
+
+function isTurnOutcome(status: TurnSnapshot["status"]): status is TurnOutcome {
+  return status === "rejected" || status === "completed" || status === "failed" || status === "interrupted";
+}
+
+function validateMessage(message: string): void {
+  if (typeof message !== "string" || message.trim() === "" || message.includes("\0")) {
+    throw new Error("message must be a non-empty string without NUL bytes");
+  }
+}
+
+function truncate(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : value.slice(value.length - maxChars);
+}
+
+function truncateTail(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value);
+  if (bytes.length <= maxBytes) return value;
+  return bytes.subarray(bytes.length - maxBytes).toString("utf8").replace(/^\uFFFD/, "");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  if (timeoutMs === 0) throw new Error(message);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
