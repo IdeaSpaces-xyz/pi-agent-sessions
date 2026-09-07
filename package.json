@@ -1,0 +1,48 @@
+{
+  "name": "@ideaspaces/pi-agent-sessions",
+  "version": "0.1.0",
+  "description": "Persistent fellow-agent sessions for Pi",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IdeaSpaces-xyz/pi-agent-sessions.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agent",
+    "rpc"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:real": "vitest run test/real-smoke.test.ts",
+    "prepare": "npm run build",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
