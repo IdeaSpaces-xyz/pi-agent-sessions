@@ -35,10 +35,10 @@ afterEach(async () => {
 describe("configuration", () => {
   it("requires a real target and an explicit trust decision", () => {
     const target = tempRoot();
-    expect(() => resolveControllerConfig({ target, trust: undefined as never }, fakeLaunch())).toThrow("trust");
-    expect(() => resolveControllerConfig({ target: join(target, "missing"), trust: { mode: "saved" } }, fakeLaunch())).toThrow("does not exist");
+    expect(() => resolveControllerConfig({ target, trust: undefined as never, executable: fakeExecutable() })).toThrow("trust");
+    expect(() => resolveControllerConfig({ target: join(target, "missing"), trust: { mode: "saved" }, executable: fakeExecutable() })).toThrow("does not exist");
     writeFileSync(join(target, "file"), "x");
-    expect(() => resolveControllerConfig({ target: join(target, "file"), trust: { mode: "saved" } }, fakeLaunch())).toThrow("must be a directory");
+    expect(() => resolveControllerConfig({ target: join(target, "file"), trust: { mode: "saved" }, executable: fakeExecutable() })).toThrow("must be a directory");
   });
 
   it("canonicalizes resource paths and builds saved versus explicit trust argv", () => {
@@ -54,13 +54,14 @@ describe("configuration", () => {
       skillPaths: [skills],
       model: "provider/model",
       thinking: "high",
-    }, fakeLaunch());
+      executable: fakeExecutable(),
+    });
     expect(saved.target).toBe(realpathSync(target));
     expect(buildPiArgv(saved)).toEqual([
       "--mode", "rpc", "--model", "provider/model", "--thinking", "high",
       "--no-extensions", "--extension", realpathSync(extension), "--skill", realpathSync(skills),
     ]);
-    const explicit = resolveControllerConfig({ target, trust: { mode: "explicit" } }, fakeLaunch());
+    const explicit = resolveControllerConfig({ target, trust: { mode: "explicit" }, executable: fakeExecutable() });
     expect(buildPiArgv(explicit)).toEqual(["--mode", "rpc", "--approve"]);
   });
 
@@ -85,7 +86,8 @@ describe("configuration", () => {
       packageDir,
       agentDir,
       env: { FAKE_CUSTOM: "yes", REMOVE_ME: undefined },
-    }, fakeLaunch());
+      executable: fakeExecutable(),
+    });
     const env = buildChildEnv({
       PATH: "/bin",
       PI_SESSION_ID: "parent",
@@ -150,6 +152,6 @@ describe("executable resolution", () => {
   });
 });
 
-function fakeLaunch() {
-  return { command: process.execPath, argvPrefix: [], source: "explicit" as const };
+function fakeExecutable() {
+  return { command: process.execPath };
 }

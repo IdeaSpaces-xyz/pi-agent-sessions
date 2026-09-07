@@ -109,7 +109,7 @@ export class PersistentRpcController {
       activeTools: [...this.activeTools].map(([toolCallId, toolName]) => ({ toolCallId, toolName })),
       outstandingRequestIds: [...this.pendingRequests.keys()],
       outstandingDialogs: [...this.dialogs.values()].map((dialog) => ({ ...dialog })),
-      recentEvents: this.events.map((event) => ({ ...event })),
+      recentEvents: this.events.map((event) => structuredClone(event)),
       turns: this.turns.map(stripTurnInternals),
       usage: this.usage === undefined ? undefined : { ...this.usage },
       stderr: this.stderr,
@@ -281,7 +281,7 @@ export class PersistentRpcController {
     }
     if (!exited && child.pid !== undefined) {
       signalProcessTree(child.pid, "SIGKILL");
-      await this.waitForExit(this.config.limits.killGraceMs);
+      exited = await this.waitForExit(this.config.limits.killGraceMs);
     }
 
     this.stopReading?.();
@@ -289,6 +289,10 @@ export class PersistentRpcController {
     const closeError = new Error("Controller closed");
     this.rejectPending(closeError);
     this.activeTools.clear();
+    if (!exited) {
+      this.status = "crashed";
+      throw new Error(`Pi process ${child.pid ?? "unknown"} did not exit after forced termination`);
+    }
     this.status = wasCrashed ? "crashed" : "closed";
   }
 

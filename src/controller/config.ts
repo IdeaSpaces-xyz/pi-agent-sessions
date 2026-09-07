@@ -4,7 +4,6 @@ import type {
   AgentSessionControllerConfig,
   ControllerLimits,
   ResolvedControllerConfig,
-  ResolvedLaunch,
 } from "./types.js";
 import { resolvePiLaunch } from "./executable.js";
 
@@ -50,7 +49,6 @@ export function validateLimits(input: Partial<ControllerLimits> = {}): Controlle
 
 export function resolveControllerConfig(
   input: AgentSessionControllerConfig,
-  launchOverride?: ResolvedLaunch,
 ): ResolvedControllerConfig {
   if (!input || typeof input !== "object") throw new Error("Controller config is required");
   if (input.trust?.mode !== "saved" && input.trust?.mode !== "explicit") {
@@ -74,7 +72,7 @@ export function resolveControllerConfig(
     agentDir,
     extensionPaths,
     skillPaths,
-    launch: launchOverride ?? resolvePiLaunch(input.executable),
+    launch: resolvePiLaunch(input.executable),
     limits: validateLimits(input.limits),
   };
 }
