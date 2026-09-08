@@ -81,14 +81,18 @@ describe("PersistentRpcController", () => {
     });
   });
 
-  it("keeps one process for repeated prompts and separates process state from outcomes", async () => {
+  it("keeps one process for repeated prompts and emits each terminal outcome once", async () => {
     const controller = await start();
     const pid = controller.snapshot().pid;
+    const settled: string[] = [];
+    const unsubscribe = controller.onTurnSettled((turn) => settled.push(turn.operationId));
     const first = await controller.promptAndWait("first");
     const second = await controller.promptAndWait("second");
+    unsubscribe();
     expect(first).toMatchObject({ status: "completed", reply: "reply 1: first", stopReason: "stop" });
     expect(second).toMatchObject({ status: "completed", reply: "reply 2: second", stopReason: "stop" });
     expect(second.operationId).not.toBe(first.operationId);
+    expect(settled).toEqual([first.operationId, second.operationId]);
     expect(controller.snapshot()).toMatchObject({ pid, status: "idle", activeTools: [], outstandingRequestIds: [] });
   });
 

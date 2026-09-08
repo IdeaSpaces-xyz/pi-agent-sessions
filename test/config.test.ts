@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -65,6 +65,41 @@ describe("configuration", () => {
     expect(buildPiArgv(explicit)).toEqual(["--mode", "rpc", "--approve"]);
   });
 
+  it("requires positive saved trust when the target has project resources", () => {
+    const target = tempRoot();
+    const agentDir = join(tempRoot(), "agent-home");
+    mkdirSync(join(target, ".pi"));
+    mkdirSync(agentDir);
+    writeFileSync(join(target, ".pi", "settings.json"), "{}\n");
+
+    expect(() =>
+      resolveControllerConfig({
+        target,
+        agentDir,
+        trust: { mode: "saved" },
+        executable: fakeExecutable(),
+      }),
+    ).toThrow("not positively trusted");
+
+    writeFileSync(join(agentDir, "trust.json"), `${JSON.stringify({ [realpathSync(target)]: true }, null, 2)}\n`);
+    expect(
+      resolveControllerConfig({
+        target,
+        agentDir,
+        trust: { mode: "saved" },
+        executable: fakeExecutable(),
+      }).target,
+    ).toBe(realpathSync(target));
+    expect(
+      resolveControllerConfig({
+        target,
+        agentDir,
+        trust: { mode: "explicit" },
+        executable: fakeExecutable(),
+      }).trust,
+    ).toEqual({ mode: "explicit" });
+  });
+
   it("validates every configured bound", () => {
     for (const [key, defaultValue] of Object.entries(DEFAULT_LIMITS) as Array<[keyof ControllerLimits, number]>) {
       expect(validateLimits({ [key]: defaultValue })[key]).toBe(defaultValue);
@@ -93,6 +128,8 @@ describe("configuration", () => {
       PI_SESSION_ID: "parent",
       PI_SESSION_FILE: "/parent.jsonl",
       PI_MODEL: "parent-model",
+      PI_AGENT_SESSIONS_CONFIG: "parent-config",
+      PI_AGENT_SESSION_DEPTH: "9",
       IS_MOUNTS: "secret",
       IS_CHANGE_ID: "change",
       KEEP_ME: "yes",
@@ -109,6 +146,8 @@ describe("configuration", () => {
     expect(env.PI_SESSION_ID).toBeUndefined();
     expect(env.PI_SESSION_FILE).toBeUndefined();
     expect(env.PI_MODEL).toBeUndefined();
+    expect(env.PI_AGENT_SESSIONS_CONFIG).toBeUndefined();
+    expect(env.PI_AGENT_SESSION_DEPTH).toBe("1");
     expect(env.IS_MOUNTS).toBeUndefined();
     expect(env.IS_CHANGE_ID).toBeUndefined();
     expect(env.REMOVE_ME).toBeUndefined();
@@ -138,6 +177,24 @@ describe("executable resolution", () => {
     expect(launch).toEqual({
       command: realpathSync(process.execPath),
       argvPrefix: ["--enable-source-maps", realpathSync(cli)],
+      source: "current-cli",
+    });
+  });
+
+  it("resolves a symlinked current Pi CLI entrypoint", () => {
+    if (process.platform === "win32") return;
+    const root = tempRoot();
+    const packageRoot = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+    const cli = join(packageRoot, "dist", "cli.js");
+    const link = join(root, "pi");
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+    writeFileSync(cli, "");
+    symlinkSync(cli, link);
+
+    expect(resolvePiLaunch(undefined, runtime({ argv: [process.execPath, link] }))).toEqual({
+      command: realpathSync(process.execPath),
+      argvPrefix: [realpathSync(cli)],
       source: "current-cli",
     });
   });

@@ -1,3 +1,28 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default async function agentSessionsExtension(pi: ExtensionAPI): Promise<void> {
+  const { default: register } = await import("./extension/index.js");
+  register(pi);
+}
+
+export { OwnedAgentSessions } from "./sessions/owned-sessions.js";
+export {
+  discoverAgentRoster,
+  revalidateAgentTarget,
+  resolveCollectionRoot,
+  DEFAULT_MAX_AGENTS,
+  DEFAULT_MAX_SCANNED_ENTRIES,
+  HARD_MAX_AGENTS,
+  HARD_MAX_SCANNED_ENTRIES,
+} from "./discovery/discovery.js";
+export {
+  APPROVE_FLAG,
+  COLLECTION_FLAG,
+  DEPTH_ENV,
+  HOST_CONFIG_ENV,
+  parseDepth,
+  resolveExtensionConfig,
+} from "./extension/config.js";
 export {
   PersistentRpcController,
   RpcCommandError,
@@ -31,3 +56,26 @@ export type {
   TurnStatus,
   UsageSnapshot,
 } from "./controller/types.js";
+export type {
+  AgentDiscoveryOptions,
+  AgentRoster,
+  AgentRosterEntry,
+} from "./discovery/types.js";
+export type {
+  AgentReply,
+  OwnedAgentSessionsConfig,
+  OwnedAgentSessionsDependencies,
+  OwnedAgentSessionsHooks,
+  OwnedRunSnapshot,
+  OwnedSessionsList,
+  OwnedSessionsStatus,
+  SendSessionInput,
+  SessionController,
+  SessionControllerFactory,
+  SessionOperationResult,
+  SessionPointer,
+  StartSessionInput,
+  StatusOptions,
+} from "./sessions/types.js";
+export type { AgentSessionToolInput } from "./extension/index.js";
+export type { ParsedExtensionConfig } from "./extension/config.js";

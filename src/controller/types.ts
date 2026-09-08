@@ -118,6 +118,8 @@ export interface PromptOptions {
   streamingBehavior?: "steer" | "followUp";
 }
 
+export type TurnSettledListener = (turn: TurnSnapshot) => void;
+
 export interface ControllerRuntime {
   execPath: string;
   execArgv: readonly string[];
