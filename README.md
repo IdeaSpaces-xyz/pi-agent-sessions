@@ -6,10 +6,10 @@ The package exposes exactly one Pi tool, `agent_session`, plus a UI-independent 
 
 ## Install
 
-Requires Node.js 20 or newer and Pi `0.85.1` or a compatible successor.
+The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.1.0
+pi install npm:@ideaspaces/pi-agent-sessions@0.1.1
 ```
 
 Configure one absolute collection root when starting Pi:

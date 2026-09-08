@@ -1,6 +1,6 @@
 {
   "name": "@ideaspaces/pi-agent-sessions",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Persistent, bounded fellow-agent sessions for Pi",
   "type": "module",
   "license": "MIT",
@@ -44,6 +44,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check:package": "npm run build && node scripts/check-package.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
