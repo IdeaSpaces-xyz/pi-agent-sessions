@@ -13,6 +13,7 @@ import type {
   RpcResponse,
   SpawnChild,
   TurnOutcome,
+  TurnSettledListener,
   TurnSnapshot,
   UsageSnapshot,
 } from "./types.js";
@@ -35,6 +36,8 @@ const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const INHERITED_ENV_DENY = [
   /^PI_SESSION_/,
   /^PI_(?:MODEL|PROVIDER|REASONING_LEVEL)$/,
+  /^PI_AGENT_SESSIONS_CONFIG$/,
+  /^PI_AGENT_SESSION_DEPTH$/,
   /^PI_AWARENESS/,
   /^IS_MOUNTS$/,
   /^IS_MAP/,
@@ -73,6 +76,7 @@ export class PersistentRpcController {
   private events: RpcRecord[] = [];
   private turns: MutableTurn[] = [];
   private activeTurn: MutableTurn | undefined;
+  private turnSettledListeners = new Set<TurnSettledListener>();
   private stopReading: (() => void) | undefined;
   private closePromise: Promise<void> | undefined;
   private exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
@@ -115,6 +119,11 @@ export class PersistentRpcController {
       stderr: this.stderr,
       protocolError: this.protocolError,
     };
+  }
+
+  onTurnSettled(listener: TurnSettledListener): () => void {
+    this.turnSettledListeners.add(listener);
+    return () => this.turnSettledListeners.delete(listener);
   }
 
   async prompt(message: string, options: PromptOptions = {}): Promise<string> {
@@ -289,6 +298,7 @@ export class PersistentRpcController {
     const closeError = new Error("Controller closed");
     this.rejectPending(closeError);
     this.activeTools.clear();
+    this.turnSettledListeners.clear();
     if (!exited) {
       this.status = "crashed";
       throw new Error(`Pi process ${child.pid ?? "unknown"} did not exit after forced termination`);
@@ -320,9 +330,17 @@ export class PersistentRpcController {
     turn.status = outcome;
     turn.settledAt = new Date().toISOString();
     if (error) turn.error = error;
-    turn.resolve(stripTurnInternals(turn));
+    const settled = stripTurnInternals(turn);
+    turn.resolve(settled);
     if (this.activeTurn === turn) this.activeTurn = undefined;
     if (this.status !== "closing" && this.status !== "closed" && this.status !== "crashed") this.status = "idle";
+    for (const listener of this.turnSettledListeners) {
+      try {
+        listener(settled);
+      } catch {
+        // Observers cannot alter controller settlement.
+      }
+    }
   }
 
   private handleRecord(value: unknown): void {

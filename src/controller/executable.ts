@@ -20,12 +20,15 @@ export function resolvePiLaunch(
   const entry = runtime.argv[1];
   if (entry) {
     const resolvedEntry = resolve(entry);
-    if (existsSync(resolvedEntry) && isPiCliEntrypoint(resolvedEntry)) {
-      return {
-        command: resolveExecutable(runtime.execPath, runtime.env, runtime.platform),
-        argvPrefix: [...runtime.execArgv, realpathSync(resolvedEntry)],
-        source: "current-cli",
-      };
+    if (existsSync(resolvedEntry)) {
+      const realEntry = realpathSync(resolvedEntry);
+      if (isPiCliEntrypoint(realEntry)) {
+        return {
+          command: resolveExecutable(runtime.execPath, runtime.env, runtime.platform),
+          argvPrefix: [...runtime.execArgv, realEntry],
+          source: "current-cli",
+        };
+      }
     }
   }
 
