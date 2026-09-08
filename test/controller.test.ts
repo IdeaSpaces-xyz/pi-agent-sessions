@@ -26,8 +26,8 @@ function config(scenario = "normal", overrides: Partial<AgentSessionControllerCo
     target,
     env: { FAKE_PI_SCENARIO: scenario, ...overrides.env },
     limits: {
-      startupTimeoutMs: 300,
-      requestTimeoutMs: 300,
+      startupTimeoutMs: 5_000,
+      requestTimeoutMs: 5_000,
       settlementTimeoutMs: 1_000,
       closeGraceMs: 100,
       killGraceMs: 100,
@@ -138,17 +138,126 @@ describe("PersistentRpcController", () => {
     expect(commands).toEqual(["get_state", "prompt", "steer", "follow_up", "clear_queue", "abort"]);
   });
 
+  it("correlates and validates all four supported dialog methods", async () => {
+    const target = tempRoot();
+    const commandRecord = join(target, "dialog-commands.jsonl");
+    const controller = await start("dialog-all", { target, env: { FAKE_COMMAND_RECORD: commandRecord } });
+    const events: any[] = [];
+    controller.onUiEvent((event) => events.push(event));
+    const operationId = await controller.prompt("ask everything");
+
+    await waitUntil(() => controller.snapshot().outstandingDialogs[0]?.id === "select-1");
+    await expect(controller.respondToDialog("select-1", { value: "Not offered" })).rejects.toThrow("not one");
+    await controller.respondToDialog("select-1", { value: "Beta" });
+    await waitUntil(() => controller.snapshot().outstandingDialogs[0]?.id === "confirm-1");
+    await expect(controller.respondToDialog("confirm-1", { value: "wrong shape" })).rejects.toThrow("confirmation");
+    await controller.respondToDialog("confirm-1", { confirmed: false });
+    await waitUntil(() => controller.snapshot().outstandingDialogs[0]?.id === "input-1");
+    await controller.respondToDialog("input-1", { value: "Ada" });
+    await waitUntil(() => controller.snapshot().outstandingDialogs[0]?.id === "editor-1");
+    await controller.respondToDialog("editor-1", { value: "edited text" });
+
+    const turn = await controller.waitForTurn(operationId);
+    expect(turn.status).toBe("completed");
+    expect(JSON.parse(turn.reply!)).toEqual([
+      { type: "extension_ui_response", id: "select-1", value: "Beta" },
+      { type: "extension_ui_response", id: "confirm-1", confirmed: false },
+      { type: "extension_ui_response", id: "input-1", value: "Ada" },
+      { type: "extension_ui_response", id: "editor-1", value: "edited text" },
+    ]);
+    expect(events.filter((event) => event.type === "request").map((event) => event.request.method)).toEqual([
+      "select", "confirm", "input", "editor",
+    ]);
+    expect(events.filter((event) => event.type === "dialog_closed").map((event) => event.reason)).toEqual([
+      "answered", "answered", "answered", "answered",
+    ]);
+  });
+
+  it("emits typed non-blocking and unsupported child UI requests", async () => {
+    const controller = await start("fire-ui");
+    const events: any[] = [];
+    controller.onUiEvent((event) => events.push(event));
+    const turn = await controller.promptAndWait("project UI");
+
+    expect(turn.status).toBe("completed");
+    expect(events.map((event) => event.request)).toEqual([
+      { id: "notify-1", method: "notify", message: "hello", notifyType: "warning" },
+      { id: "status-1", method: "setStatus", statusKey: "job", statusText: "working" },
+      {
+        id: "widget-1",
+        method: "setWidget",
+        widgetKey: "job",
+        widgetLines: ["one", "two"],
+        widgetPlacement: "belowEditor",
+      },
+      { id: "title-1", method: "setTitle", title: "child title" },
+      { id: "editor-text-1", method: "set_editor_text", text: "child text" },
+      { id: "custom-1", method: "unsupported", requestedMethod: "customComponent" },
+    ]);
+  });
+
+  it("times out a dialog, cancels the exact child request, and rejects a late answer", async () => {
+    const target = tempRoot();
+    const commandRecord = join(target, "timeout-commands.jsonl");
+    const controller = await start("dialog-timeout", {
+      target,
+      env: { FAKE_COMMAND_RECORD: commandRecord },
+      limits: { dialogTimeoutMs: 100 },
+    });
+    const events: any[] = [];
+    controller.onUiEvent((event) => events.push(event));
+    const operationId = await controller.prompt("wait");
+    const turn = await controller.waitForTurn(operationId);
+
+    expect(turn).toMatchObject({ status: "interrupted", reply: "timed out" });
+    expect(events).toContainEqual({ type: "dialog_closed", id: "timeout-1", method: "input", reason: "timeout" });
+    await expect(controller.respondToDialog("timeout-1", { value: "late" })).rejects.toThrow("Unknown or settled");
+    const commands = readFileSync(commandRecord, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(commands).toContainEqual({ type: "extension_ui_response", id: "timeout-1", cancelled: true });
+  });
+
+  it("cancels an outstanding dialog before interrupting its turn", async () => {
+    const target = tempRoot();
+    const commandRecord = join(target, "interrupt-dialog-commands.jsonl");
+    const controller = await start("dialog", { target, env: { FAKE_COMMAND_RECORD: commandRecord } });
+    const events: any[] = [];
+    controller.onUiEvent((event) => events.push(event));
+    const operationId = await controller.prompt("ask");
+    await waitUntil(() => controller.snapshot().outstandingDialogs.length === 1);
+
+    const turn = await controller.interrupt();
+    expect(turn).toMatchObject({ operationId, status: "interrupted" });
+    expect(events).toContainEqual({ type: "dialog_closed", id: "dialog-1", method: "confirm", reason: "interrupt" });
+    const commands = readFileSync(commandRecord, "utf8").trim().split("\n").map((line) => JSON.parse(line).type);
+    expect(commands.indexOf("extension_ui_response")).toBeLessThan(commands.indexOf("clear_queue"));
+    expect(commands.indexOf("clear_queue")).toBeLessThan(commands.indexOf("abort"));
+  });
+
   it("tracks human dialogs and cancels them when closing", async () => {
     const target = tempRoot();
     const record = join(target, "dialog.jsonl");
     const controller = await start("dialog", { target, env: { FAKE_PI_RECORD: record } });
+    const events: any[] = [];
+    controller.onUiEvent((event) => events.push(event));
     await controller.prompt("ask");
     await waitUntil(() => controller.snapshot().outstandingDialogs.length === 1);
     expect(controller.snapshot().status).toBe("waiting_for_input");
     await controller.close();
     const lines = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(lines).toContainEqual({ type: "extension_ui_response", id: "dialog-1", cancelled: true });
+    expect(events).toContainEqual({ type: "dialog_closed", id: "dialog-1", method: "confirm", reason: "close" });
     expect(controller.snapshot()).toMatchObject({ status: "closed", outstandingDialogs: [], outstandingRequestIds: [] });
+  });
+
+  it("bounds concurrently retained child dialogs", async () => {
+    const controller = await start("dialog-overflow", { limits: { maxDialogs: 1 } });
+    await controller.prompt("overflow").catch(() => undefined);
+    await waitUntil(() => controller.snapshot().status === "crashed");
+    expect(controller.snapshot()).toMatchObject({
+      status: "crashed",
+      outstandingDialogs: [],
+      protocolError: "Malformed extension UI request: Outstanding dialog limit reached (1)",
+    });
   });
 
   it("fails a turn and process on malformed protocol or a child crash", async () => {

@@ -30,6 +30,8 @@ interface ManagedRun {
   unread: AgentReply[];
   commandTail: Promise<void>;
   unsubscribeSettled?: () => void;
+  unsubscribeUi?: () => void;
+  unsubscribeState?: () => void;
   closedPointerWritten: boolean;
 }
 
@@ -121,9 +123,22 @@ export class OwnedAgentSessions {
           void this.settleOperation(run, turn, runGeneration);
         });
       }
+      if (controller.onUiEvent) {
+        run.unsubscribeUi = controller.onUiEvent((event) => {
+          if (this.runs.get(controller.runId) !== run) return;
+          if (!this.accepting && event.type === "request") return;
+          this.hooks.uiEvent?.({ agent: run.agent, runId: controller.runId, event });
+        });
+      }
+      if (controller.onStateChanged) {
+        run.unsubscribeState = controller.onStateChanged(() => {
+          if (this.runs.get(controller.runId) === run) this.hooks.stateChanged?.();
+        });
+      }
       this.runs.set(controller.runId, run);
       this.writePointer(run, "started");
       const operation = await this.beginPrompt(run, input.message);
+      this.hooks.stateChanged?.();
       return { run: this.snapshotRun(run, false), operation };
     });
   }
@@ -164,14 +179,30 @@ export class OwnedAgentSessions {
     };
     if (options.consumeUnread) {
       for (const run of selected) run.unread = [];
+      this.hooks.stateChanged?.();
     }
     return result;
+  }
+
+  async respondToDialog(
+    runId: string,
+    id: string,
+    response: { value: string } | { confirmed: boolean } | { cancelled: true },
+  ): Promise<void> {
+    const run = this.requireRun(runId);
+    return this.serializeRun(run, async () => {
+      this.requireAccepting();
+      if (!run.controller.respondToDialog) throw new Error("This session controller cannot answer dialogs");
+      await run.controller.respondToDialog(id, response);
+      this.hooks.stateChanged?.();
+    });
   }
 
   async interrupt(runId: string): Promise<SessionOperationResult> {
     const run = this.requireRun(runId);
     return this.serializeRun(run, async () => {
       const operation = await run.controller.interrupt();
+      this.hooks.stateChanged?.();
       return { run: this.snapshotRun(run, false), operation };
     });
   }
@@ -180,9 +211,9 @@ export class OwnedAgentSessions {
     const run = this.requireRun(runId);
     return this.serializeRun(run, async () => {
       await run.controller.close();
-      run.unsubscribeSettled?.();
-      run.unsubscribeSettled = undefined;
+      this.unsubscribeRun(run);
       this.writePointer(run, "closed");
+      this.hooks.stateChanged?.();
       return this.snapshotRun(run, false);
     });
   }
@@ -195,13 +226,23 @@ export class OwnedAgentSessions {
       [...this.runs.values()].map((run) =>
         this.serializeRun(run, async () => {
           await run.controller.close().catch(() => undefined);
-          run.unsubscribeSettled?.();
-          run.unsubscribeSettled = undefined;
+          this.unsubscribeRun(run);
           this.writePointer(run, "closed");
         }),
       ),
-    ).then(() => undefined);
+    ).then(() => {
+      this.hooks.stateChanged?.();
+    });
     return this.shutdownPromise;
+  }
+
+  private unsubscribeRun(run: ManagedRun): void {
+    run.unsubscribeSettled?.();
+    run.unsubscribeUi?.();
+    run.unsubscribeState?.();
+    run.unsubscribeSettled = undefined;
+    run.unsubscribeUi = undefined;
+    run.unsubscribeState = undefined;
   }
 
   private async refreshRoster(): Promise<AgentRoster> {

@@ -8,6 +8,15 @@ let input = Buffer.alloc(0);
 let descendant;
 const steering = [];
 const followUp = [];
+const dialogAnswers = [];
+let dialogIndex = 0;
+
+const allDialogs = [
+  { id: "select-1", method: "select", title: "Choose", options: ["Alpha", "Beta"], timeout: 500 },
+  { id: "confirm-1", method: "confirm", title: "Proceed?", message: "Continue", timeout: 500 },
+  { id: "input-1", method: "input", title: "Name", placeholder: "value", timeout: 500 },
+  { id: "editor-1", method: "editor", title: "Draft", prefill: "starting text" },
+];
 
 if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR);
 
@@ -51,6 +60,16 @@ function assistant(text, stopReason = "stop") {
       usage: { input: 10, output: 3, totalTokens: 13, cost: { total: 0.001 } },
     },
   };
+}
+
+function emitNextDialog() {
+  const dialog = allDialogs[dialogIndex];
+  if (dialog) {
+    emit({ type: "extension_ui_request", ...dialog });
+    return;
+  }
+  emit(assistant(JSON.stringify(dialogAnswers)));
+  emit({ type: "agent_settled" });
 }
 
 function completePrompt(command) {
@@ -133,14 +152,34 @@ function handle(command) {
       }, 5);
       return;
     }
-    if (scenario === "hold" || scenario === "dialog") {
+    if (scenario === "hold" || scenario === "dialog" || scenario === "dialog-all" || scenario === "dialog-timeout" || scenario === "dialog-overflow") {
       response(command);
       emit({ type: "agent_start" });
       emit({ type: "tool_execution_start", toolCallId: "held-a", toolName: "read" });
       emit({ type: "tool_execution_start", toolCallId: "held-b", toolName: "bash" });
       if (scenario === "dialog") {
         emit({ type: "extension_ui_request", id: "dialog-1", method: "confirm", title: "Proceed?", message: "Continue" });
+      } else if (scenario === "dialog-all") {
+        emitNextDialog();
+      } else if (scenario === "dialog-timeout") {
+        emit({ type: "extension_ui_request", id: "timeout-1", method: "input", title: "Wait", timeout: 20 });
+      } else if (scenario === "dialog-overflow") {
+        emit({ type: "extension_ui_request", id: "dialog-1", method: "confirm", title: "One", message: "First" });
+        emit({ type: "extension_ui_request", id: "dialog-2", method: "confirm", title: "Two", message: "Second" });
       }
+      return;
+    }
+    if (scenario === "fire-ui") {
+      response(command);
+      emit({ type: "agent_start" });
+      emit({ type: "extension_ui_request", id: "notify-1", method: "notify", message: "hello", notifyType: "warning" });
+      emit({ type: "extension_ui_request", id: "status-1", method: "setStatus", statusKey: "job", statusText: "working" });
+      emit({ type: "extension_ui_request", id: "widget-1", method: "setWidget", widgetKey: "job", widgetLines: ["one", "two"], widgetPlacement: "belowEditor" });
+      emit({ type: "extension_ui_request", id: "title-1", method: "setTitle", title: "child title" });
+      emit({ type: "extension_ui_request", id: "editor-text-1", method: "set_editor_text", text: "child text" });
+      emit({ type: "extension_ui_request", id: "custom-1", method: "customComponent" });
+      emit(assistant("ui projected"));
+      emit({ type: "agent_settled" });
       return;
     }
     completePrompt(command);
@@ -171,6 +210,13 @@ function handle(command) {
     if (recordPath) appendFileSync(recordPath, `\n${JSON.stringify(command)}`);
     if (scenario === "dialog") {
       emit(assistant(command.cancelled ? "cancelled" : "dialog answered", command.cancelled ? "aborted" : "stop"));
+      emit({ type: "agent_settled" });
+    } else if (scenario === "dialog-all") {
+      dialogAnswers.push(command);
+      dialogIndex += 1;
+      emitNextDialog();
+    } else if (scenario === "dialog-timeout") {
+      emit(assistant(command.cancelled ? "timed out" : "unexpected answer", command.cancelled ? "aborted" : "stop"));
       emit({ type: "agent_settled" });
     }
     return;

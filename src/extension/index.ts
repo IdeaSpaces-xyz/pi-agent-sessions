@@ -18,11 +18,14 @@ import {
   parseDepth,
   resolveExtensionConfig,
 } from "./config.js";
+import { ParentUiAdapter } from "./parent-ui.js";
 
 const POINTER_ENTRY = "agent-session-pointer";
 const REPLY_MESSAGE = "agent-session-reply";
 const MAX_HISTORY_POINTERS = 50;
 const MAX_TOOL_OUTPUT_BYTES = 48 * 1024;
+const SESSION_WIDGET = "agent-sessions";
+const MAX_WIDGET_RUNS = 4;
 
 const ActionSchema = StringEnum(["list", "start", "send", "status", "interrupt", "close"] as const);
 const BusyModeSchema = StringEnum(["steer", "followUp"] as const);
@@ -68,8 +71,25 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
 
   let configError: string | undefined;
   let sessions: OwnedAgentSessions | undefined;
+  let parentUi: ParentUiAdapter | undefined;
   let context: ExtensionContext | undefined;
   let historicalPointers: SessionPointer[] = [];
+
+  const updateWidget = () => {
+    if (!sessions) return;
+    const status = sessions.status();
+    for (const run of status.runs) {
+      if (run.session.status === "closed" || run.session.status === "crashed") parentUi?.clearRun(run.session.runId);
+    }
+    if (context?.mode !== "tui") return;
+    try {
+      context.ui.setWidget(SESSION_WIDGET, buildSessionWidget(status), {
+        placement: "belowEditor",
+      });
+    } catch {
+      // The session UI may already be tearing down.
+    }
+  };
 
   try {
     if (parseDepth(process.env[DEPTH_ENV]) > 0) return;
@@ -90,6 +110,13 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
 
     try {
       const resolved = resolveExtensionConfig(pi);
+      parentUi = new ParentUiAdapter(
+        () => context,
+        (runId, id, response) => {
+          if (!sessions) return Promise.reject(new Error("The parent session is shutting down"));
+          return sessions.respondToDialog(runId, id, response);
+        },
+      );
       sessions = new OwnedAgentSessions(resolved.sessions, {
         deliver(reply) {
           pi.sendMessage(
@@ -118,7 +145,12 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             safeNotify(context, `Could not persist the ${pointer.agent} transcript pointer: ${errorMessage(error)}`, "warning");
           }
         },
+        uiEvent(event) {
+          parentUi?.handle(event);
+        },
+        stateChanged: updateWidget,
       });
+      updateWidget();
     } catch (error) {
       configError = errorMessage(error);
       sessions = undefined;
@@ -132,7 +164,11 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     context = ctx;
+    parentUi?.shutdown();
     await sessions?.shutdown();
+    if (ctx.mode === "tui") ctx.ui.setWidget(SESSION_WIDGET, undefined);
+    parentUi = undefined;
+    sessions = undefined;
     context = undefined;
   });
 
@@ -230,6 +266,23 @@ function formatList(list: OwnedSessionsList, history: SessionPointer[]): string 
   lines.push(...(list.runs.length ? list.runs.map(formatRunLine) : ["none"]));
   if (history.length > 0) lines.push(`Transcript pointers retained: ${history.length}`);
   return lines.join("\n");
+}
+
+function buildSessionWidget(status: OwnedSessionsStatus): string[] | undefined {
+  const visible = status.runs.filter((run) => {
+    const state = run.session.status;
+    return (state !== "closed" && state !== "crashed") || run.unreadReplies > 0;
+  });
+  if (visible.length === 0) return undefined;
+  const lines = [`Fellow agents (${visible.length})`];
+  for (const run of visible.slice(0, MAX_WIDGET_RUNS)) {
+    const tools = run.session.activeTools.map((tool) => tool.toolName);
+    const activity = tools.length > 0 ? ` · ${tools.slice(0, 3).join(", ")}` : "";
+    const unread = run.unreadReplies > 0 ? ` · ${run.unreadReplies} unread` : "";
+    lines.push(`${run.agent} · ${run.session.status}${activity}${unread}`);
+  }
+  if (visible.length > MAX_WIDGET_RUNS) lines.push(`…and ${visible.length - MAX_WIDGET_RUNS} more`);
+  return lines;
 }
 
 function formatStatus(status: OwnedSessionsStatus, history: SessionPointer[]): string {

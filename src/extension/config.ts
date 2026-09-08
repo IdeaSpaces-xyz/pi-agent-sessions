@@ -126,6 +126,7 @@ function parseLimits(value: unknown): Partial<ControllerLimits> | undefined {
     "startupTimeoutMs",
     "requestTimeoutMs",
     "settlementTimeoutMs",
+    "dialogTimeoutMs",
     "closeGraceMs",
     "killGraceMs",
     "maxLineBytes",
@@ -133,6 +134,7 @@ function parseLimits(value: unknown): Partial<ControllerLimits> | undefined {
     "maxTurns",
     "maxStderrBytes",
     "maxReplyChars",
+    "maxDialogs",
     "maxChildren",
   ];
   rejectUnknownKeys(object, keys, "controller.limits");
