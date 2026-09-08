@@ -1,6 +1,6 @@
 {
   "name": "@ideaspaces/pi-agent-sessions",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Persistent, bounded fellow-agent sessions for Pi",
   "type": "module",
   "license": "MIT",

@@ -182,16 +182,41 @@ describe("agent_session Pi extension", () => {
     const frontend = await tool.execute("call-2", { action: "start", agent: "Frontend", message: "two" }, undefined, undefined, context);
     await waitUntil(() => api.messages.length === 2);
 
-    expect(backend.content[0].text).toContain("Started Backend");
-    expect(frontend.content[0].text).toContain("Started Frontend");
+    expect(backend.content[0].text).toMatch(/^Started Backend — (running|idle) — runId:/);
+    expect(frontend.content[0].text).toMatch(/^Started Frontend — (running|idle) — runId:/);
+    expect(backend.content[0].text).not.toContain("Transcript:");
+    expect(frontend.content[0].text).not.toContain("fake-session");
     expect(api.messages.map((item) => item.parentBusy)).toEqual([true, false]);
     for (const delivered of api.messages) {
       expect(delivered.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
       expect(delivered.message).toMatchObject({ customType: "agent-session-reply", display: true });
-      expect(delivered.message.content).toContain("[Fellow agent reply —");
-      expect(delivered.message.content).toContain("Outcome: completed");
+      expect(delivered.message.content).toMatch(/^\[Fellow agent reply — .+ · completed · runId: .+\]/);
+      expect(delivered.message.content).not.toContain("Operation:");
     }
     expect(api.entries.filter((entry) => entry.customType === "agent-session-pointer")).toHaveLength(2);
+
+    const runId = backend.details.operation.run.session.runId as string;
+    const compactStatus = await tool.execute("call-3", { action: "status", runId }, undefined, undefined, context);
+    expect(compactStatus.content[0].text).toContain(`runId: ${runId}`);
+    expect(compactStatus.content[0].text).toContain("latest operationId:");
+    expect(compactStatus.content[0].text).not.toContain("transcript:");
+    expect(compactStatus.content[0].text).not.toContain("recent events:");
+    expect(compactStatus.content[0].text).not.toContain("fake-session");
+
+    const detailedStatus = await tool.execute(
+      "call-4",
+      { action: "status", runId, includeEvents: true },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(detailedStatus.content[0].text).toContain("transcript:");
+    expect(detailedStatus.content[0].text).toContain("recent events:");
+    expect(detailedStatus.content[0].text).toMatch(/agent_settled ×1/);
+    expect(detailedStatus.content[0].text).not.toContain("message_update");
+
+    const list = await tool.execute("call-5", { action: "list" }, undefined, undefined, context);
+    expect(list.content[0].text).not.toContain("Transcript pointers");
 
     await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
     expect(api.entries.filter((entry) => entry.customType === "agent-session-pointer")).toHaveLength(4);
@@ -266,7 +291,7 @@ describe("agent_session Pi extension", () => {
     expect(api.messages).toEqual([]);
     const status = await tool.execute("call-3", { action: "status", runId }, undefined, undefined, context);
     expect(status.content[0].text).toContain("Unread replies (1)");
-    expect(status.content[0].text).toContain("Outcome: interrupted");
+    expect(status.content[0].text).toContain("· interrupted · runId:");
     const reread = await tool.execute("call-4", { action: "status", runId }, undefined, undefined, context);
     expect(reread.content[0].text).not.toContain("Unread replies");
 

@@ -380,7 +380,7 @@ export class PersistentRpcController {
       this.handleResponse(record);
       return;
     }
-    this.pushEvent(record);
+    if (record.type !== "message_update") this.pushEvent(record);
     this.handleEvent(record);
   }
 

@@ -9,7 +9,7 @@ The package exposes exactly one Pi tool, `agent_session`, plus a UI-independent 
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.1.1
+pi install npm:@ideaspaces/pi-agent-sessions@0.1.2
 ```
 
 Configure one absolute collection root when starting Pi:
@@ -50,6 +50,8 @@ Ask Pi to list or consult a fellow agent. The model uses one tool with six actio
 | `close` | Idempotently close the owned process tree. |
 
 A terminal widget shows live child state, active tools, waiting dialogs, and unread replies. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
+
+Normal tool results keep only the agent, clearly labelled `runId`, process state, latest operation, and unread count. Transcript paths, stderr, protocol errors, and aggregated recent-event counts appear only when `status` is called with diagnostic `includeEvents: true`. Streaming `message_update` events update live state and usage but are not retained in diagnostic history. Start and send complete in the background; wait for the automatic reply rather than polling status.
 
 Child `select`, `confirm`, `input`, and `editor` requests are labelled and serialized through one parent FIFO. Responses remain correlated to the requesting child. Missing UI, request timeout, interruption, close, or parent teardown cancels the exact request; absence is never converted into approval. Child notifications, statuses, and string widgets are projected with run-scoped keys. Requests to replace the parent title or editor text are reported as unsupported.
 
