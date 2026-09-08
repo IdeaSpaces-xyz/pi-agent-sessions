@@ -78,16 +78,17 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
         type: "prompt",
         message:
           `Call agent_session start exactly once for agent FixtureAgent using model ${model}. ` +
-          "Give it this exact message: Call p3_dialog_smoke exactly once, then read _agent/now.md and reply with " +
+          "Give it this exact message: Call p3_dialog_smoke exactly once, then call read exactly once on _agent/now.md and reply with " +
           "CHILD-P3-DONE, the exact marker, and your exact current working directory. Do not call any other tool.",
       });
       await rpc.waitFor(() => rpc.runId !== undefined, "owned run id");
       await rpc.waitFor(() => rpc.dialogs.length === 4, "four forwarded dialogs");
       expect(rpc.dialogs).toEqual(["select", "confirm", "input", "editor"]);
       await rpc.waitFor(
-        () => rpc.assistantTexts.some((text) => text.includes("CHILD-P3-DONE") && text.includes("PARENT-E2E-NOW") && text.includes(realpathSync(target))),
+        () => rpc.fellowReplies.some((text) => text.includes("CHILD-P3-DONE") && text.includes("PARENT-E2E-NOW") && text.includes(realpathSync(target))),
         "automatic child reply",
       );
+      await rpc.waitFor(() => rpc.settledCount >= 2, "parent relay settlement");
 
       rpc.send({
         id: "follow-up",
@@ -96,7 +97,8 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
           `Call agent_session send exactly once for runId ${rpc.runId}. ` +
           "Send this exact message: Reply exactly CHILD-FOLLOW-UP-OK. Do not call any other tool.",
       });
-      await rpc.waitFor(() => rpc.assistantTexts.some((text) => text.includes("CHILD-FOLLOW-UP-OK")), "follow-up reply");
+      await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("CHILD-FOLLOW-UP-OK")), "follow-up reply");
+      await rpc.waitFor(() => rpc.settledCount >= 4, "follow-up relay settlement");
 
       rpc.send({
         id: "close",
@@ -119,8 +121,10 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
 class ParentRpcHarness {
   readonly events: any[] = [];
   readonly assistantTexts: string[] = [];
+  readonly fellowReplies: string[] = [];
   readonly dialogs: string[] = [];
   runId: string | undefined;
+  settledCount = 0;
   private readonly waiters = new Set<{ predicate: () => boolean; resolve: () => void }>();
   private stderr = "";
 
@@ -150,7 +154,7 @@ class ParentRpcHarness {
         reached,
         new Promise<void>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`Timed out waiting for ${label}. Stderr: ${this.stderr}. Assistants: ${JSON.stringify(this.assistantTexts)}`)),
+            () => reject(new Error(`Timed out waiting for ${label}. Stderr: ${this.stderr}. Assistants: ${JSON.stringify(this.assistantTexts)}. Fellow replies: ${JSON.stringify(this.fellowReplies)}`)),
             timeoutMs,
           );
         }),
@@ -182,6 +186,7 @@ class ParentRpcHarness {
 
   private handle(event: any): void {
     this.events.push(event);
+    if (event.type === "agent_settled") this.settledCount += 1;
     if (event.type === "extension_ui_request") {
       this.dialogs.push(event.method);
       if (event.method === "select") this.send({ type: "extension_ui_response", id: event.id, value: "Alpha" });
@@ -194,6 +199,13 @@ class ParentRpcHarness {
     }
     if (event.type === "message_end" && event.message?.role === "assistant") {
       this.assistantTexts.push(assistantText(event.message.content));
+    }
+    if (
+      event.type === "message_end" &&
+      event.message?.role === "custom" &&
+      event.message?.customType === "agent-session-reply"
+    ) {
+      this.fellowReplies.push(assistantText(event.message.content));
     }
     for (const waiter of [...this.waiters]) {
       if (!waiter.predicate()) continue;

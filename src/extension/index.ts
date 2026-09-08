@@ -39,7 +39,9 @@ const AgentSessionParams = Type.Object({
   busyMode: Type.Optional(BusyModeSchema),
   model: Type.Optional(Type.String({ description: "Optional child model override for start" })),
   thinking: Type.Optional(ThinkingSchema),
-  includeEvents: Type.Optional(Type.Boolean({ description: "Include bounded recent events in status" })),
+  includeEvents: Type.Optional(Type.Boolean({
+    description: "Diagnostic only: include transcript, errors, and aggregated bounded event counts in status",
+  })),
 });
 
 export interface AgentSessionToolInput {
@@ -180,7 +182,9 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
     promptSnippet: "List, start, continue, inspect, interrupt, or close persistent fellow-agent sessions",
     promptGuidelines: [
       "Use agent_session only for configured fellow agents; start accepts an agent name, never an arbitrary folder.",
-      "A successful agent_session start or send continues in the background; do not repeatedly poll unless the person asks or automatic delivery was held by branch movement.",
+      "Start and send return after the background turn begins. Tell the person once, then wait for the automatic fellow-agent reply; do not poll or send another message merely to retrieve it.",
+      "When an automatic fellow-agent reply arrives, relay its substantive answer to the person; do not merely acknowledge receipt or repeat transport metadata.",
+      "Use status when the person asks, when a reply was held by branch movement, or when diagnosing a problem. Set includeEvents only for diagnostics.",
       "Use agent_session interrupt to stop one child turn while preserving its session; use close only to end the child process.",
     ],
     parameters: AgentSessionParams,
@@ -194,7 +198,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
         case "list": {
           onUpdate?.(progress("Refreshing the fellow-agent roster…"));
           const list = await sessions.list();
-          return result(formatList(list, historicalPointers), { list, history: historicalPointers });
+          return result(formatList(list), { list, history: historicalPointers });
         }
         case "start": {
           const agent = required(params.agent, "agent_session start requires agent");
@@ -216,7 +220,10 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             includeEvents: params.includeEvents,
             consumeUnread: true,
           });
-          return result(formatStatus(status, historicalPointers), { status, history: historicalPointers });
+          return result(formatStatus(status, { detailed: params.includeEvents === true }), {
+            status,
+            history: historicalPointers,
+          });
         }
         case "interrupt": {
           const runId = required(params.runId, "agent_session interrupt requires runId");
@@ -228,7 +235,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
           const runId = required(params.runId, "agent_session close requires runId");
           onUpdate?.(progress(`Closing ${runId}…`));
           const closed = await sessions.close(runId);
-          return result(`Closed ${formatRunLine(closed)}. Transcript: ${transcript(closed)}.`, { run: closed });
+          return result(`Closed ${formatRunLine(closed)}.`, { run: closed });
         }
       }
     },
@@ -255,7 +262,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
   });
 }
 
-function formatList(list: OwnedSessionsList, history: SessionPointer[]): string {
+function formatList(list: OwnedSessionsList): string {
   const lines: string[] = [];
   if (list.configurationError) lines.push(list.configurationError);
   else {
@@ -264,7 +271,6 @@ function formatList(list: OwnedSessionsList, history: SessionPointer[]): string 
   }
   lines.push(`Owned runs (${list.runs.length}):`);
   lines.push(...(list.runs.length ? list.runs.map(formatRunLine) : ["none"]));
-  if (history.length > 0) lines.push(`Transcript pointers retained: ${history.length}`);
   return lines.join("\n");
 }
 
@@ -285,14 +291,13 @@ function buildSessionWidget(status: OwnedSessionsStatus): string[] | undefined {
   return lines;
 }
 
-function formatStatus(status: OwnedSessionsStatus, history: SessionPointer[]): string {
+function formatStatus(status: OwnedSessionsStatus, options: { detailed: boolean }): string {
   const lines = [`Owned runs (${status.runs.length}):`];
-  lines.push(...(status.runs.length ? status.runs.map(formatRunStatus) : ["none"]));
+  lines.push(...(status.runs.length ? status.runs.map((run) => formatRunStatus(run, options)) : ["none"]));
   if (status.unread.length > 0) {
     lines.push("", `Unread replies (${status.unread.length}):`);
     for (const reply of status.unread) lines.push(formatReply(reply));
   }
-  if (history.length > 0) lines.push("", `Transcript pointers retained: ${history.length}`);
   return lines.join("\n");
 }
 
@@ -300,40 +305,46 @@ function formatOperation(verb: string, operation: SessionOperationResult): strin
   const turn = operation.operation;
   const queued = operation.queuedToOperationId;
   const suffix = turn
-    ? ` Operation ${turn.operationId}: ${turn.status}.`
+    ? ` Operation: ${turn.operationId} (${turn.status}).`
     : queued
-      ? ` Queued into active operation ${queued}.`
+      ? ` Queued for operation: ${queued}.`
       : "";
-  return `${verb} ${formatRunLine(operation.run)}.${suffix} Transcript: ${transcript(operation.run)}.`;
+  return `${verb} ${formatRunLine(operation.run)}.${suffix}`;
 }
 
 function formatRunLine(run: OwnedRunSnapshot): string {
-  const unread = run.unreadReplies > 0 ? `, ${run.unreadReplies} unread` : "";
-  return `${run.agent} — ${run.session.status} — ${run.session.runId}${unread}`;
+  const unread = run.unreadReplies > 0 ? ` · ${run.unreadReplies} unread` : "";
+  return `${run.agent} — ${run.session.status} — runId: ${run.session.runId}${unread}`;
 }
 
-function formatRunStatus(run: OwnedRunSnapshot): string {
-  const lines = [formatRunLine(run), `  transcript: ${transcript(run)}`];
+function formatRunStatus(run: OwnedRunSnapshot, options: { detailed: boolean }): string {
+  const lines = [formatRunLine(run)];
   if (run.session.activeTools.length > 0) {
     lines.push(`  tools: ${run.session.activeTools.map((tool) => tool.toolName).join(", ")}`);
   }
   const latest = run.session.turns.at(-1);
-  if (latest) lines.push(`  latest operation: ${latest.operationId} (${latest.status})`);
-  if (run.session.recentEvents.length > 0) {
-    lines.push(`  recent events: ${run.session.recentEvents.map((event) => event.type).join(", ")}`);
-  }
+  if (latest) lines.push(`  latest operationId: ${latest.operationId} (${latest.status})`);
+  if (!options.detailed) return lines.join("\n");
+  lines.push(`  transcript: ${transcript(run)}`);
+  const eventCounts = countEventTypes(run.session.recentEvents);
+  if (eventCounts.length > 0) lines.push(`  recent events: ${eventCounts.join(", ")}`);
   if (run.session.protocolError) lines.push(`  protocol error: ${run.session.protocolError}`);
   if (run.session.stderr) lines.push(`  stderr: ${run.session.stderr}`);
   return lines.join("\n");
 }
 
+function countEventTypes(events: OwnedRunSnapshot["session"]["recentEvents"]): string[] {
+  const counts = new Map<string, number>();
+  for (const event of events) counts.set(event.type, (counts.get(event.type) ?? 0) + 1);
+  return [...counts]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([type, count]) => `${type} ×${count}`);
+}
+
 function formatReply(reply: AgentReply): string {
   const body = reply.reply ?? reply.error ?? "(no reply text)";
   return [
-    `[Fellow agent reply — ${reply.agent}]`,
-    `Run: ${reply.runId}`,
-    `Operation: ${reply.operationId}`,
-    `Outcome: ${reply.outcome}`,
+    `[Fellow agent reply — ${reply.agent} · ${reply.outcome} · runId: ${reply.runId}]`,
     "",
     body,
   ].join("\n");

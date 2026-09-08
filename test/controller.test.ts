@@ -101,6 +101,7 @@ describe("PersistentRpcController", () => {
     const turn = await controller.promptAndWait("retry me");
     expect(turn).toMatchObject({ status: "completed", reply: "after retry" });
     expect(controller.snapshot().recentEvents.map((event) => event.type)).toContain("auto_retry_start");
+    expect(controller.snapshot().recentEvents.map((event) => event.type)).not.toContain("message_update");
   });
 
   it("decodes split Unicode framing without treating Unicode separators as records", async () => {
