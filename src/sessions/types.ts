@@ -1,6 +1,7 @@
 import type {
   AgentSessionControllerConfig,
   AgentSessionSnapshot,
+  ChildUiEvent,
   PromptOptions,
   TurnSnapshot,
 } from "../controller/types.js";
@@ -14,6 +15,12 @@ export interface SessionController {
   followUp(message: string): Promise<void>;
   waitForTurn(operationId: string, timeoutMs?: number): Promise<TurnSnapshot>;
   onTurnSettled?(listener: (turn: TurnSnapshot) => void): () => void;
+  onUiEvent?(listener: (event: ChildUiEvent) => void): () => void;
+  onStateChanged?(listener: () => void): () => void;
+  respondToDialog?(
+    id: string,
+    response: { value: string } | { confirmed: boolean } | { cancelled: true },
+  ): Promise<void>;
   interrupt(): Promise<TurnSnapshot | undefined>;
   close(): Promise<void>;
 }
@@ -78,10 +85,18 @@ export interface OwnedAgentSessionsConfig {
   controller?: Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking">;
 }
 
+export interface OwnedUiEvent {
+  agent: string;
+  runId: string;
+  event: ChildUiEvent;
+}
+
 export interface OwnedAgentSessionsHooks {
   deliver(reply: AgentReply): void;
   replyHeld?(reply: AgentReply): void;
   pointer?(pointer: SessionPointer): void;
+  uiEvent?(event: OwnedUiEvent): void;
+  stateChanged?(): void;
 }
 
 export interface OwnedAgentSessionsDependencies {

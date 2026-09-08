@@ -1,5 +1,5 @@
 import { mkdtempSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,10 @@ class FakeExtensionApi {
   readonly handlers = new Map<string, Array<(event: any, context: ExtensionContext) => unknown>>();
   readonly messages: Array<{ message: any; options: any; parentBusy: boolean }> = [];
   readonly entries: Array<{ customType: string; data: unknown }> = [];
+  readonly dialogCalls: Array<{ method: string; title: string }> = [];
+  readonly dialogAnswers: unknown[] = [];
+  readonly widgetUpdates: Array<{ key: string; lines: string[] | undefined }> = [];
+  readonly statusUpdates: Array<{ key: string; text: string | undefined }> = [];
   parentBusy = false;
 
   registerFlag(name: string, options: { default?: string | boolean }): void {
@@ -69,8 +73,30 @@ function fakeContext(api: FakeExtensionApi): ExtensionContext {
     mode: "tui",
     cwd: tempRoot(),
     ui: {
+      select(title: string) {
+        api.dialogCalls.push({ method: "select", title });
+        return Promise.resolve(api.dialogAnswers.shift() as string | undefined);
+      },
+      confirm(title: string) {
+        api.dialogCalls.push({ method: "confirm", title });
+        return Promise.resolve(api.dialogAnswers.shift() as boolean ?? false);
+      },
+      input(title: string) {
+        api.dialogCalls.push({ method: "input", title });
+        return Promise.resolve(api.dialogAnswers.shift() as string | undefined);
+      },
+      editor(title: string) {
+        api.dialogCalls.push({ method: "editor", title });
+        return Promise.resolve(api.dialogAnswers.shift() as string | undefined);
+      },
       notify(message: string, type?: string) {
         api.entries.push({ customType: `notify:${type ?? "info"}`, data: message });
+      },
+      setWidget(key: string, lines: string[] | undefined) {
+        api.widgetUpdates.push({ key, lines });
+      },
+      setStatus(key: string, text: string | undefined) {
+        api.statusUpdates.push({ key, text });
       },
     },
     sessionManager: {
@@ -79,16 +105,16 @@ function fakeContext(api: FakeExtensionApi): ExtensionContext {
   } as unknown as ExtensionContext;
 }
 
-function configure(root: string, scenario: string): void {
+function configure(root: string, scenario: string, extraEnv: Record<string, string> = {}): void {
   process.env[HOST_CONFIG_ENV] = JSON.stringify({
     collectionRoot: root,
     approveProjectResources: true,
     controller: {
       executable: { command: process.execPath, argvPrefix: [fakePi] },
-      env: { FAKE_PI_SCENARIO: scenario },
+      env: { FAKE_PI_SCENARIO: scenario, ...extraEnv },
       limits: {
-        startupTimeoutMs: 300,
-        requestTimeoutMs: 300,
+        startupTimeoutMs: 5_000,
+        requestTimeoutMs: 5_000,
         settlementTimeoutMs: 1_000,
         closeGraceMs: 100,
         killGraceMs: 100,
@@ -169,6 +195,56 @@ describe("agent_session Pi extension", () => {
 
     await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
     expect(api.entries.filter((entry) => entry.customType === "agent-session-pointer")).toHaveLength(4);
+  });
+
+  it("forwards all supported dialogs through the labelled parent FIFO and updates the terminal widget", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    configure(root, "dialog-all");
+    const api = new FakeExtensionApi();
+    api.dialogAnswers.push("Beta", false, "Ada", "edited text");
+    const context = fakeContext(api);
+    agentSessionsExtension(api as unknown as ExtensionAPI);
+    await api.emit("session_start", { type: "session_start", reason: "startup" }, context);
+    const tool = api.tools.find((candidate) => candidate.name === "agent_session");
+
+    const started = await tool.execute(
+      "call-1",
+      { action: "start", agent: "Backend", message: "ask" },
+      undefined,
+      undefined,
+      context,
+    );
+    await waitUntil(() => api.messages.length === 1);
+
+    expect(started.content[0].text).toContain("Started Backend");
+    expect(api.dialogCalls.map((call) => call.method)).toEqual(["select", "confirm", "input", "editor"]);
+    expect(api.dialogCalls.every((call) => call.title.includes("Fellow agent: Backend"))).toBe(true);
+    expect(api.messages[0].message.content).toContain('"confirmed":false');
+    expect(api.widgetUpdates.some((update) => update.lines?.some((line) => line.includes("Backend")))).toBe(true);
+
+    await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
+    expect(api.widgetUpdates.at(-1)).toEqual({ key: "agent-sessions", lines: undefined });
+  });
+
+  it("cancels a forwarded dialog on parent teardown without waiting for late UI", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    const commandRecord = join(root, "commands.jsonl");
+    configure(root, "dialog", { FAKE_COMMAND_RECORD: commandRecord });
+    const api = new FakeExtensionApi();
+    api.dialogAnswers.push(new Promise(() => undefined));
+    const context = fakeContext(api);
+    agentSessionsExtension(api as unknown as ExtensionAPI);
+    await api.emit("session_start", { type: "session_start", reason: "startup" }, context);
+    const tool = api.tools.find((candidate) => candidate.name === "agent_session");
+
+    await tool.execute("call-1", { action: "start", agent: "Backend", message: "ask" }, undefined, undefined, context);
+    await waitUntil(() => api.dialogCalls.length === 1);
+    await api.emit("session_shutdown", { type: "session_shutdown", reason: "reload" }, context);
+
+    const commands = (await readFile(commandRecord, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(commands).toContainEqual({ type: "extension_ui_response", id: "dialog-1", cancelled: true });
   });
 
   it("holds a reply after branch movement and retrieves it through status", async () => {

@@ -24,6 +24,7 @@ export interface ControllerLimits {
   startupTimeoutMs: number;
   requestTimeoutMs: number;
   settlementTimeoutMs: number;
+  dialogTimeoutMs: number;
   closeGraceMs: number;
   killGraceMs: number;
   maxLineBytes: number;
@@ -31,6 +32,7 @@ export interface ControllerLimits {
   maxTurns: number;
   maxStderrBytes: number;
   maxReplyChars: number;
+  maxDialogs: number;
   maxChildren: number;
 }
 
@@ -91,10 +93,45 @@ export interface TurnSnapshot {
   error?: string;
 }
 
+export type DialogMethod = "select" | "confirm" | "input" | "editor";
+export type DialogCloseReason = "answered" | "cancelled" | "timeout" | "interrupt" | "close" | "process_exit";
+
+interface ChildDialogBase {
+  id: string;
+  title: string;
+  timeoutMs: number;
+}
+
+export type ChildDialogRequest =
+  | (ChildDialogBase & { method: "select"; options: string[] })
+  | (ChildDialogBase & { method: "confirm"; message: string })
+  | (ChildDialogBase & { method: "input"; placeholder?: string })
+  | (ChildDialogBase & { method: "editor"; prefill?: string });
+
+export type ChildUiRequest =
+  | ChildDialogRequest
+  | { id: string; method: "notify"; message: string; notifyType: "info" | "warning" | "error" }
+  | { id: string; method: "setStatus"; statusKey: string; statusText?: string }
+  | {
+      id: string;
+      method: "setWidget";
+      widgetKey: string;
+      widgetLines?: string[];
+      widgetPlacement: "aboveEditor" | "belowEditor";
+    }
+  | { id: string; method: "setTitle"; title: string }
+  | { id: string; method: "set_editor_text"; text: string }
+  | { id: string; method: "unsupported"; requestedMethod: string };
+
+export type ChildUiEvent =
+  | { type: "request"; request: ChildUiRequest }
+  | { type: "dialog_closed"; id: string; method: DialogMethod; reason: DialogCloseReason };
+
 export interface DialogSnapshot {
   id: string;
-  method: string;
-  title?: string;
+  method: DialogMethod;
+  title: string;
+  timeoutMs: number;
 }
 
 export interface AgentSessionSnapshot {
@@ -119,6 +156,8 @@ export interface PromptOptions {
 }
 
 export type TurnSettledListener = (turn: TurnSnapshot) => void;
+export type ChildUiEventListener = (event: ChildUiEvent) => void;
+export type StateChangedListener = () => void;
 
 export interface ControllerRuntime {
   execPath: string;

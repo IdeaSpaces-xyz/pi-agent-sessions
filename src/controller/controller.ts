@@ -6,13 +6,18 @@ import { attachStrictJsonlReader, serializeJsonl } from "./jsonl.js";
 import type {
   AgentSessionControllerConfig,
   AgentSessionSnapshot,
-  DialogSnapshot,
+  ChildDialogRequest,
+  ChildUiEvent,
+  ChildUiEventListener,
+  ChildUiRequest,
+  DialogCloseReason,
   PromptOptions,
   ResolvedControllerConfig,
   RpcRecord,
   RpcResponse,
   SpawnChild,
   TurnOutcome,
+  StateChangedListener,
   TurnSettledListener,
   TurnSnapshot,
   UsageSnapshot,
@@ -32,7 +37,13 @@ interface MutableTurn extends TurnSnapshot {
   completion: Promise<TurnSnapshot>;
 }
 
-const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
+interface PendingDialog {
+  request: ChildDialogRequest;
+  timer: NodeJS.Timeout;
+}
+
+const MAX_DIALOG_OPTIONS = 200;
+const MAX_WIDGET_LINES = 200;
 const INHERITED_ENV_DENY = [
   /^PI_SESSION_/,
   /^PI_(?:MODEL|PROVIDER|REASONING_LEVEL)$/,
@@ -72,11 +83,13 @@ export class PersistentRpcController {
   private operationSequence = 0;
   private pendingRequests = new Map<string, PendingRequest>();
   private activeTools = new Map<string, string>();
-  private dialogs = new Map<string, DialogSnapshot>();
+  private dialogs = new Map<string, PendingDialog>();
   private events: RpcRecord[] = [];
   private turns: MutableTurn[] = [];
   private activeTurn: MutableTurn | undefined;
   private turnSettledListeners = new Set<TurnSettledListener>();
+  private uiEventListeners = new Set<ChildUiEventListener>();
+  private stateChangedListeners = new Set<StateChangedListener>();
   private stopReading: (() => void) | undefined;
   private closePromise: Promise<void> | undefined;
   private exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
@@ -112,7 +125,12 @@ export class PersistentRpcController {
       sessionFile: this.sessionFile,
       activeTools: [...this.activeTools].map(([toolCallId, toolName]) => ({ toolCallId, toolName })),
       outstandingRequestIds: [...this.pendingRequests.keys()],
-      outstandingDialogs: [...this.dialogs.values()].map((dialog) => ({ ...dialog })),
+      outstandingDialogs: [...this.dialogs.values()].map(({ request }) => ({
+        id: request.id,
+        method: request.method,
+        title: request.title,
+        timeoutMs: request.timeoutMs,
+      })),
       recentEvents: this.events.map((event) => structuredClone(event)),
       turns: this.turns.map(stripTurnInternals),
       usage: this.usage === undefined ? undefined : { ...this.usage },
@@ -126,6 +144,16 @@ export class PersistentRpcController {
     return () => this.turnSettledListeners.delete(listener);
   }
 
+  onUiEvent(listener: ChildUiEventListener): () => void {
+    this.uiEventListeners.add(listener);
+    return () => this.uiEventListeners.delete(listener);
+  }
+
+  onStateChanged(listener: StateChangedListener): () => void {
+    this.stateChangedListeners.add(listener);
+    return () => this.stateChangedListeners.delete(listener);
+  }
+
   async prompt(message: string, options: PromptOptions = {}): Promise<string> {
     this.requireUsable();
     validateMessage(message);
@@ -135,6 +163,7 @@ export class PersistentRpcController {
     const turn = this.createTurn();
     this.activeTurn = turn;
     this.status = "running";
+    this.notifyStateChanged();
     try {
       const response = await this.sendRpc({
         type: "prompt",
@@ -184,14 +213,15 @@ export class PersistentRpcController {
     response: { value: string } | { confirmed: boolean } | { cancelled: true },
   ): Promise<void> {
     this.requireUsable();
-    if (!this.dialogs.has(id)) throw new Error(`Unknown or settled dialog: ${id}`);
-    this.sendRaw({ type: "extension_ui_response", id, ...response });
-    this.dialogs.delete(id);
-    this.status = this.activeTurn ? "running" : "idle";
+    const pending = this.dialogs.get(id);
+    if (!pending) throw new Error(`Unknown or settled dialog: ${id}`);
+    validateDialogResponse(pending.request, response);
+    this.finishDialog(id, "cancelled" in response ? "cancelled" : "answered", response);
   }
 
   async interrupt(): Promise<TurnSnapshot | undefined> {
     this.requireUsable(true);
+    this.cancelDialogs("interrupt");
     const turn = this.activeTurn;
     if (!turn || isTurnOutcome(turn.status)) return undefined;
     turn.interruptedRequested = true;
@@ -253,6 +283,7 @@ export class PersistentRpcController {
     this.sessionId = state.sessionId;
     if (typeof state.sessionFile === "string") this.sessionFile = state.sessionFile;
     this.status = state.isStreaming === true ? "running" : "idle";
+    this.notifyStateChanged();
   }
 
   private async closeInternal(): Promise<void> {
@@ -263,15 +294,8 @@ export class PersistentRpcController {
     if (this.status === "closed") return;
     const wasCrashed = this.status === "crashed";
     this.status = "closing";
-
-    for (const id of this.dialogs.keys()) {
-      try {
-        this.sendRaw({ type: "extension_ui_response", id, cancelled: true });
-      } catch {
-        break;
-      }
-    }
-    this.dialogs.clear();
+    this.notifyStateChanged();
+    this.cancelDialogs("close");
 
     if (this.activeTurn && !isTurnOutcome(this.activeTurn.status)) {
       try {
@@ -301,9 +325,15 @@ export class PersistentRpcController {
     this.turnSettledListeners.clear();
     if (!exited) {
       this.status = "crashed";
+      this.notifyStateChanged();
+      this.uiEventListeners.clear();
+      this.stateChangedListeners.clear();
       throw new Error(`Pi process ${child.pid ?? "unknown"} did not exit after forced termination`);
     }
     this.status = wasCrashed ? "crashed" : "closed";
+    this.notifyStateChanged();
+    this.uiEventListeners.clear();
+    this.stateChangedListeners.clear();
   }
 
   private createTurn(): MutableTurn {
@@ -334,6 +364,7 @@ export class PersistentRpcController {
     turn.resolve(settled);
     if (this.activeTurn === turn) this.activeTurn = undefined;
     if (this.status !== "closing" && this.status !== "closed" && this.status !== "crashed") this.status = "idle";
+    this.notifyStateChanged();
     for (const listener of this.turnSettledListeners) {
       try {
         listener(settled);
@@ -382,7 +413,10 @@ export class PersistentRpcController {
       case "auto_retry_start":
       case "summarization_retry_scheduled":
       case "summarization_retry_attempt_start":
-        if (this.status !== "closing") this.status = "running";
+        if (this.status !== "closing") {
+          this.status = "running";
+          this.notifyStateChanged();
+        }
         break;
       case "message_update":
         this.updateUsage(record.usage);
@@ -393,13 +427,17 @@ export class PersistentRpcController {
       case "tool_execution_start":
         if (typeof record.toolCallId === "string" && typeof record.toolName === "string") {
           this.activeTools.set(record.toolCallId, record.toolName);
+          this.notifyStateChanged();
         }
         break;
       case "tool_execution_end":
-        if (typeof record.toolCallId === "string") this.activeTools.delete(record.toolCallId);
+        if (typeof record.toolCallId === "string") {
+          this.activeTools.delete(record.toolCallId);
+          this.notifyStateChanged();
+        }
         break;
       case "extension_ui_request":
-        this.captureDialog(record);
+        this.captureUiRequest(record);
         break;
       case "agent_settled":
         this.settleActiveTurn();
@@ -420,14 +458,79 @@ export class PersistentRpcController {
     this.updateUsage(message.usage);
   }
 
-  private captureDialog(record: RpcRecord): void {
-    if (typeof record.id !== "string" || typeof record.method !== "string" || !DIALOG_METHODS.has(record.method)) return;
-    this.dialogs.set(record.id, {
-      id: record.id,
-      method: record.method,
-      title: typeof record.title === "string" ? record.title : undefined,
-    });
-    if (this.status !== "closing") this.status = "waiting_for_input";
+  private captureUiRequest(record: RpcRecord): void {
+    try {
+      const request = parseUiRequest(record, this.config.limits.dialogTimeoutMs);
+      if (request.method === "unsupported") {
+        this.emitUiEvent({ type: "request", request });
+        return;
+      }
+      if (isDialogRequest(request)) {
+        if (this.dialogs.has(request.id)) throw new Error(`Duplicate extension UI request id: ${request.id}`);
+        if (this.dialogs.size >= this.config.limits.maxDialogs) {
+          throw new Error(`Outstanding dialog limit reached (${this.config.limits.maxDialogs})`);
+        }
+        const timer = setTimeout(() => this.finishDialog(request.id, "timeout", { cancelled: true }), request.timeoutMs);
+        this.dialogs.set(request.id, { request, timer });
+        if (this.status !== "closing") this.status = "waiting_for_input";
+      }
+      this.emitUiEvent({ type: "request", request });
+      this.notifyStateChanged();
+    } catch (error) {
+      this.failProcess(new Error(`Malformed extension UI request: ${errorMessage(error)}`), true);
+    }
+  }
+
+  private finishDialog(
+    id: string,
+    reason: DialogCloseReason,
+    response?: { value: string } | { confirmed: boolean } | { cancelled: true },
+  ): void {
+    const pending = this.dialogs.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (response) this.sendRaw({ type: "extension_ui_response", id, ...response });
+    this.dialogs.delete(id);
+    if (this.status !== "closing" && this.status !== "closed" && this.status !== "crashed") {
+      this.status = this.dialogs.size > 0 ? "waiting_for_input" : this.activeTurn ? "running" : "idle";
+    }
+    this.emitUiEvent({ type: "dialog_closed", id, method: pending.request.method, reason });
+    this.notifyStateChanged();
+  }
+
+  private cancelDialogs(reason: Exclude<DialogCloseReason, "answered" | "cancelled">): void {
+    for (const id of [...this.dialogs.keys()]) {
+      try {
+        this.finishDialog(id, reason, { cancelled: true });
+      } catch {
+        const pending = this.dialogs.get(id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.dialogs.delete(id);
+          this.emitUiEvent({ type: "dialog_closed", id, method: pending.request.method, reason });
+        }
+      }
+    }
+  }
+
+  private emitUiEvent(event: ChildUiEvent): void {
+    for (const listener of this.uiEventListeners) {
+      try {
+        listener(structuredClone(event));
+      } catch {
+        // UI observers cannot alter controller lifecycle.
+      }
+    }
+  }
+
+  private notifyStateChanged(): void {
+    for (const listener of this.stateChangedListeners) {
+      try {
+        listener();
+      } catch {
+        // State observers cannot alter controller lifecycle.
+      }
+    }
   }
 
   private settleActiveTurn(): void {
@@ -525,7 +628,12 @@ export class PersistentRpcController {
     this.status = "crashed";
     this.rejectPending(error);
     this.activeTools.clear();
+    for (const [id, pending] of this.dialogs) {
+      clearTimeout(pending.timer);
+      this.emitUiEvent({ type: "dialog_closed", id, method: pending.request.method, reason: "process_exit" });
+    }
     this.dialogs.clear();
+    this.notifyStateChanged();
     if (this.activeTurn && !isTurnOutcome(this.activeTurn.status)) this.finishTurn(this.activeTurn, "failed", error.message);
     if (this.child?.pid !== undefined) signalProcessTree(this.child.pid, "SIGKILL");
   }
@@ -602,6 +710,124 @@ function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
       }
     }
   }
+}
+
+function parseUiRequest(record: RpcRecord, defaultDialogTimeoutMs: number): ChildUiRequest {
+  const id = requireRecordString(record, "id");
+  const method = requireRecordString(record, "method");
+  const title = () => requireRecordString(record, "title");
+  const timeoutMs = () => {
+    if (record.timeout === undefined) return defaultDialogTimeoutMs;
+    if (!Number.isSafeInteger(record.timeout) || (record.timeout as number) <= 0) {
+      throw new Error("timeout must be a positive integer");
+    }
+    return Math.min(record.timeout as number, defaultDialogTimeoutMs);
+  };
+
+  switch (method) {
+    case "select": {
+      if (!Array.isArray(record.options) || record.options.length === 0 || record.options.length > MAX_DIALOG_OPTIONS) {
+        throw new Error(`options must contain between 1 and ${MAX_DIALOG_OPTIONS} strings`);
+      }
+      if (record.options.some((option) => typeof option !== "string")) throw new Error("options must contain only strings");
+      return { id, method, title: title(), options: [...record.options] as string[], timeoutMs: timeoutMs() };
+    }
+    case "confirm":
+      return { id, method, title: title(), message: requireRecordString(record, "message", true), timeoutMs: timeoutMs() };
+    case "input":
+      return {
+        id,
+        method,
+        title: title(),
+        placeholder: optionalRecordString(record, "placeholder"),
+        timeoutMs: timeoutMs(),
+      };
+    case "editor":
+      return {
+        id,
+        method,
+        title: title(),
+        prefill: optionalRecordString(record, "prefill"),
+        timeoutMs: defaultDialogTimeoutMs,
+      };
+    case "notify": {
+      const notifyType = record.notifyType ?? "info";
+      if (notifyType !== "info" && notifyType !== "warning" && notifyType !== "error") {
+        throw new Error("notifyType must be info, warning, or error");
+      }
+      return { id, method, message: requireRecordString(record, "message", true), notifyType };
+    }
+    case "setStatus":
+      return {
+        id,
+        method,
+        statusKey: requireRecordString(record, "statusKey"),
+        statusText: optionalRecordString(record, "statusText"),
+      };
+    case "setWidget": {
+      if (
+        record.widgetLines !== undefined &&
+        (!Array.isArray(record.widgetLines) ||
+          record.widgetLines.length > MAX_WIDGET_LINES ||
+          record.widgetLines.some((line) => typeof line !== "string"))
+      ) {
+        throw new Error(`widgetLines must contain at most ${MAX_WIDGET_LINES} strings`);
+      }
+      const placement = record.widgetPlacement ?? "aboveEditor";
+      if (placement !== "aboveEditor" && placement !== "belowEditor") {
+        throw new Error("widgetPlacement must be aboveEditor or belowEditor");
+      }
+      return {
+        id,
+        method,
+        widgetKey: requireRecordString(record, "widgetKey"),
+        widgetLines: record.widgetLines === undefined ? undefined : [...record.widgetLines] as string[],
+        widgetPlacement: placement,
+      };
+    }
+    case "setTitle":
+      return { id, method, title: title() };
+    case "set_editor_text":
+      return { id, method, text: requireRecordString(record, "text", true) };
+    default:
+      return { id, method: "unsupported", requestedMethod: method };
+  }
+}
+
+function isDialogRequest(request: ChildUiRequest): request is ChildDialogRequest {
+  return request.method === "select" || request.method === "confirm" || request.method === "input" || request.method === "editor";
+}
+
+function validateDialogResponse(
+  request: ChildDialogRequest,
+  response: { value: string } | { confirmed: boolean } | { cancelled: true },
+): void {
+  if ("cancelled" in response) return;
+  if (request.method === "confirm") {
+    if (!("confirmed" in response) || typeof response.confirmed !== "boolean") {
+      throw new Error(`Dialog ${request.id} requires a confirmation response`);
+    }
+    return;
+  }
+  if (!("value" in response) || typeof response.value !== "string") {
+    throw new Error(`Dialog ${request.id} requires a string response`);
+  }
+  if (request.method === "select" && !request.options.includes(response.value)) {
+    throw new Error(`Dialog ${request.id} response is not one of its options`);
+  }
+}
+
+function requireRecordString(record: RpcRecord, field: string, allowEmpty = false): string {
+  const value = record[field];
+  if (typeof value !== "string" || (!allowEmpty && value === "")) throw new Error(`${field} must be a string${allowEmpty ? "" : " and cannot be empty"}`);
+  return value;
+}
+
+function optionalRecordString(record: RpcRecord, field: string): string | undefined {
+  const value = record[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${field} must be a string when present`);
+  return value;
 }
 
 function asRecord(value: unknown): RpcRecord {

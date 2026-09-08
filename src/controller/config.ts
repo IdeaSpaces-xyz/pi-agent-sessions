@@ -12,6 +12,7 @@ export const DEFAULT_LIMITS: Readonly<ControllerLimits> = Object.freeze({
   startupTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
   settlementTimeoutMs: 10 * 60_000,
+  dialogTimeoutMs: 10 * 60_000,
   closeGraceMs: 5_000,
   killGraceMs: 2_000,
   maxLineBytes: 1024 * 1024,
@@ -19,6 +20,7 @@ export const DEFAULT_LIMITS: Readonly<ControllerLimits> = Object.freeze({
   maxTurns: 50,
   maxStderrBytes: 32 * 1024,
   maxReplyChars: 64 * 1024,
+  maxDialogs: 16,
   maxChildren: 4,
 });
 
@@ -26,6 +28,7 @@ const LIMIT_BOUNDS: Record<keyof ControllerLimits, readonly [number, number]> = 
   startupTimeoutMs: [10, 30_000],
   requestTimeoutMs: [10, 120_000],
   settlementTimeoutMs: [10, 3_600_000],
+  dialogTimeoutMs: [10, 3_600_000],
   closeGraceMs: [0, 30_000],
   killGraceMs: [10, 10_000],
   maxLineBytes: [256, 16 * 1024 * 1024],
@@ -33,6 +36,7 @@ const LIMIT_BOUNDS: Record<keyof ControllerLimits, readonly [number, number]> = 
   maxTurns: [1, 500],
   maxStderrBytes: [256, 128 * 1024],
   maxReplyChars: [256, 256 * 1024],
+  maxDialogs: [1, 64],
   maxChildren: [1, 8],
 };
 

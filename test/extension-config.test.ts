@@ -24,7 +24,7 @@ describe("agent session extension config", () => {
           controller: {
             executable: { command: "/host/pi", argvPrefix: ["cli.js"] },
             extensionPaths: ["/host/extensions/a.js"],
-            limits: { maxChildren: 2 },
+            limits: { maxChildren: 2, dialogTimeoutMs: 45_000 },
           },
         }),
         [DEPTH_ENV]: "0",
@@ -41,7 +41,7 @@ describe("agent session extension config", () => {
         controller: {
           executable: { command: "/host/pi", argvPrefix: ["cli.js"] },
           extensionPaths: ["/host/extensions/a.js"],
-          limits: { maxChildren: 2 },
+          limits: { maxChildren: 2, dialogTimeoutMs: 45_000 },
         },
       },
     });

@@ -1,18 +1,27 @@
 {
   "name": "@ideaspaces/pi-agent-sessions",
   "version": "0.1.0",
-  "description": "Persistent fellow-agent sessions for Pi",
+  "description": "Persistent, bounded fellow-agent sessions for Pi",
   "type": "module",
   "license": "MIT",
+  "author": "IdeaSpaces",
+  "homepage": "https://github.com/IdeaSpaces-xyz/pi-agent-sessions#readme",
+  "bugs": {
+    "url": "https://github.com/IdeaSpaces-xyz/pi-agent-sessions/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/IdeaSpaces-xyz/pi-agent-sessions.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "pi-package",
     "pi",
     "agent",
-    "rpc"
+    "rpc",
+    "multi-agent"
   ],
   "pi": {
     "extensions": [
@@ -38,7 +47,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:real": "vitest run test/real-smoke.test.ts",
+    "test:real": "vitest run test/real-smoke.test.ts test/real-turn-smoke.test.ts test/real-parent-smoke.test.ts",
     "prepare": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
