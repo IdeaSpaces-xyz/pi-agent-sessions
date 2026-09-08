@@ -28,3 +28,6 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run pack:check
+      # Pi 0.85.1 itself requires Node >=22.19; Node 20 still covers the UI-independent controller.
+      - if: matrix.node-version == 22
+        run: npm run check:package

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import register from "./extension/index.js";
 
-export default async function agentSessionsExtension(pi: ExtensionAPI): Promise<void> {
-  const { default: register } = await import("./extension/index.js");
+export default function agentSessionsExtension(pi: ExtensionAPI): void {
   register(pi);
 }
 
