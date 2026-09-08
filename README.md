@@ -9,7 +9,7 @@ The package exposes exactly one Pi tool, `agent_session`, plus a UI-independent 
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.1.2
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.0
 ```
 
 Configure one absolute collection root when starting Pi:
@@ -38,16 +38,22 @@ pi -e /absolute/path/to/pi-agent-sessions \
 
 ## Use
 
-Ask Pi to list or consult a fellow agent. The model uses one tool with six actions:
+Ask Pi to list or consult a fellow agent. The model uses one tool with eight actions:
 
 | Action | Purpose |
 |---|---|
 | `list` | Refresh the bounded roster and show owned runs. |
-| `start` | Start a discovered agent with a required first message. |
+| `conversations` | List or query bounded prior Pi conversation metadata for one discovered agent. |
+| `start` | Start a discovered agent with a required first message and optional durable topic name. |
+| `resume` | Continue an exact catalog conversation in a new owned RPC process. |
 | `send` | Continue an idle run, or explicitly `steer`/`followUp` a busy run. |
 | `status` | Inspect bounded state and retrieve replies held by branch movement. |
 | `interrupt` | Stop the current turn while keeping the child session alive. |
 | `close` | Idempotently close the owned process tree. |
+
+An agent name addresses a canonical folder and point of view. A `conversationId` addresses durable Pi session history under that agent's session coordinate. A `runId` controls only the transient RPC process currently hosting it. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
+
+`resume` accepts the exact agent plus `conversationId` returned by `conversations`, never a path or prefix. It revalidates the target and session, then takes an exclusive package lease before opening `pi --session`. Another package parent cannot write that conversation concurrently; uncertain ownership fails closed. Resume starts a new process and reapplies current target startup and trust—it does not reconnect to an old PID or preserve a process across parent teardown.
 
 A terminal widget shows live child state, active tools, waiting dialogs, and unread replies. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
 
@@ -65,6 +71,11 @@ Hosts can supply `PI_AGENT_SESSIONS_CONFIG` as strict JSON. Host configuration t
 {
   "collectionRoot": "/absolute/path/to/agents",
   "approveProjectResources": false,
+  "conversations": {
+    "maxConversations": 50,
+    "maxScannedEntries": 500,
+    "maxFileBytes": 4194304
+  },
   "controller": {
     "executable": { "command": "/absolute/path/to/pi" },
     "limits": {

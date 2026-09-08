@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listAgentConversations,
+  resolveAgentConversation,
   resolveAgentSessionDir,
   validateConversationLimits,
 } from "../src/conversations/catalog.js";
@@ -80,6 +81,13 @@ describe("agent conversation catalog", () => {
     });
     expect(catalog.conversations.map((item) => item.conversationId)).toEqual(["valid-id"]);
     expect(catalog.skippedEntries).toBe(5);
+    expect(() => resolveAgentConversation(target, "valid-id", {
+      env: { PI_CODING_AGENT_SESSION_DIR: sessions },
+      limits: { maxFileBytes: 1_024 },
+    })).toThrow("Ambiguous conversationId");
+    expect(() => resolveAgentConversation(target, "../escape", {
+      env: { PI_CODING_AGENT_SESSION_DIR: sessions },
+    })).toThrow("exact valid");
   });
 
   it("bounds scanned files, returned rows, previews, and queries", async () => {
@@ -109,13 +117,22 @@ describe("agent conversation catalog", () => {
     expect(() => validateConversationLimits({ maxConversations: 3, maxScannedEntries: 2 })).toThrow("cannot exceed");
   });
 
-  it("resolves relative session directories against the agent target", async () => {
+  it("resolves session storage with Pi's environment, project, global, and default precedence", async () => {
     const root = tempRoot();
     const target = join(root, "Backend");
-    await mkdir(target);
+    const agentDir = join(root, "agent-state");
+    await mkdir(join(target, ".pi"), { recursive: true });
+    await mkdir(agentDir);
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "global-sessions" }));
+    await writeFile(join(target, ".pi", "settings.json"), JSON.stringify({ sessionDir: "project-sessions" }));
+
+    expect(resolveAgentSessionDir(target, { agentDir })).toBe(join(realpathSync(target), "project-sessions"));
     expect(resolveAgentSessionDir(target, {
+      agentDir,
       env: { PI_CODING_AGENT_SESSION_DIR: ".pi/sessions" },
     })).toBe(join(realpathSync(target), ".pi", "sessions"));
+    await rm(join(target, ".pi", "settings.json"));
+    expect(resolveAgentSessionDir(target, { agentDir })).toBe(join(realpathSync(target), "global-sessions"));
   });
 });
 

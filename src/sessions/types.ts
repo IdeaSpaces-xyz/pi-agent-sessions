@@ -84,7 +84,7 @@ export interface OwnedAgentSessionsConfig {
     maxScannedEntries?: number;
   };
   conversations?: Partial<ConversationCatalogLimits>;
-  controller?: Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName">;
+  controller?: Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName" | "resumeSession">;
 }
 
 export interface OwnedUiEvent {
@@ -117,6 +117,14 @@ export interface StartSessionInput {
 export interface ListConversationsInput {
   agent: string;
   query?: string;
+}
+
+export interface ResumeSessionInput {
+  agent: string;
+  conversationId: string;
+  message: string;
+  model?: string;
+  thinking?: AgentSessionControllerConfig["thinking"];
 }
 
 export type ListConversationsResult = AgentConversationCatalog;

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const scenario = process.env.FAKE_PI_SCENARIO ?? "normal";
 const recordPath = process.env.FAKE_PI_RECORD;
@@ -10,6 +10,11 @@ const steering = [];
 const followUp = [];
 const dialogAnswers = [];
 let dialogIndex = 0;
+const sessionArgIndex = process.argv.indexOf("--session");
+const resumedSessionFile = sessionArgIndex >= 0 ? process.argv[sessionArgIndex + 1] : undefined;
+const resumedSessionHeader = resumedSessionFile
+  ? JSON.parse(readFileSync(resumedSessionFile, "utf8").split("\n")[0])
+  : undefined;
 
 const allDialogs = [
   { id: "select-1", method: "select", title: "Choose", options: ["Alpha", "Beta"], timeout: 500 },
@@ -90,14 +95,17 @@ function handle(command) {
   if (process.env.FAKE_COMMAND_RECORD) appendFileSync(process.env.FAKE_COMMAND_RECORD, `${JSON.stringify(command)}\n`);
   if (command.type === "get_state") {
     if (scenario === "handshake-timeout") return;
+    if (scenario === "mutate-resume" && resumedSessionFile) {
+      writeFileSync(resumedSessionFile, `${JSON.stringify({ ...resumedSessionHeader, id: "mutated-session" })}\n`);
+    }
     if (scenario === "malformed-start") {
       process.stdout.write("{not-json}\n");
       return;
     }
     response(command, true, {
       data: {
-        sessionId: "fake-session",
-        sessionFile: `${process.cwd()}/.pi/sessions/fake.jsonl`,
+        sessionId: resumedSessionHeader?.id ?? "fake-session",
+        sessionFile: resumedSessionFile ?? `${process.cwd()}/.pi/sessions/fake.jsonl`,
         isStreaming: false,
         thinkingLevel: "medium",
         steeringMode: "one-at-a-time",

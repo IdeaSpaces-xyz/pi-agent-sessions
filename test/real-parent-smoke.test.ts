@@ -88,8 +88,10 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
         () => rpc.fellowReplies.some((text) => text.includes("CHILD-P3-DONE") && text.includes("PARENT-E2E-NOW") && text.includes(realpathSync(target))),
         "automatic child reply",
       );
-      await rpc.waitFor(() => rpc.settledCount >= 2, "parent relay settlement");
+      await rpc.waitFor(() => rpc.assistantTexts.length >= 3, "parent relay");
+      await rpc.waitForIdle("parent relay settlement");
 
+      const assistantCountBeforeFollowUp = rpc.assistantTexts.length;
       rpc.send({
         id: "follow-up",
         type: "prompt",
@@ -98,7 +100,8 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
           "Send this exact message: Reply exactly CHILD-FOLLOW-UP-OK. Do not call any other tool.",
       });
       await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("CHILD-FOLLOW-UP-OK")), "follow-up reply");
-      await rpc.waitFor(() => rpc.settledCount >= 4, "follow-up relay settlement");
+      await rpc.waitFor(() => rpc.assistantTexts.length > assistantCountBeforeFollowUp, "follow-up relay");
+      await rpc.waitForIdle("follow-up relay settlement");
 
       rpc.send({
         id: "close",
@@ -124,7 +127,7 @@ class ParentRpcHarness {
   readonly fellowReplies: string[] = [];
   readonly dialogs: string[] = [];
   runId: string | undefined;
-  settledCount = 0;
+  private stateSequence = 0;
   private readonly waiters = new Set<{ predicate: () => boolean; resolve: () => void }>();
   private stderr = "";
 
@@ -165,6 +168,23 @@ class ParentRpcHarness {
     }
   }
 
+  async waitForIdle(label: string, timeoutMs = 180_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const id = `idle-${++this.stateSequence}`;
+      this.send({ id, type: "get_state" });
+      await this.waitFor(
+        () => this.events.some((event) => event.type === "response" && event.id === id),
+        label,
+        Math.max(1, deadline - Date.now()),
+      );
+      const state = this.events.find((event) => event.type === "response" && event.id === id);
+      if (state?.success === true && state.data?.isStreaming === false) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for ${label}`);
+  }
+
   async close(): Promise<void> {
     this.child.stdin.end();
     const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
@@ -186,7 +206,6 @@ class ParentRpcHarness {
 
   private handle(event: any): void {
     this.events.push(event);
-    if (event.type === "agent_settled") this.settledCount += 1;
     if (event.type === "extension_ui_request") {
       this.dialogs.push(event.method);
       if (event.method === "select") this.send({ type: "extension_ui_response", id: event.id, value: "Alpha" });

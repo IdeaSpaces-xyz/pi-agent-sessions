@@ -65,12 +65,16 @@ export function resolveControllerConfig(
   const agentDir = input.agentDir === undefined ? undefined : resolveExistingDirectory(input.agentDir, "agentDir");
   const extensionPaths = resolvePaths(input.extensionPaths, "extensionPaths");
   const skillPaths = resolvePaths(input.skillPaths, "skillPaths");
+  const resumeSession = resolveResumeSession(input.resumeSession, target);
 
   validateOptionalText(input.model, "model");
   validateOptionalText(input.thinking, "thinking");
   validateOptionalText(input.sessionName, "sessionName");
   if (input.sessionName !== undefined && input.sessionName.trim().length > 200) {
     throw new Error("sessionName cannot exceed 200 characters");
+  }
+  if (input.sessionName !== undefined && resumeSession) {
+    throw new Error("sessionName cannot be combined with resumeSession");
   }
   validateEnvironment(input.env);
   requireSavedTrust(input, target, agentDir);
@@ -82,8 +86,57 @@ export function resolveControllerConfig(
     agentDir,
     extensionPaths,
     skillPaths,
+    resumeSession,
     launch: resolvePiLaunch(input.executable),
     limits: validateLimits(input.limits),
+  };
+}
+
+function resolveResumeSession(
+  input: AgentSessionControllerConfig["resumeSession"],
+  target: string,
+): ResolvedControllerConfig["resumeSession"] {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== "object") throw new Error("resumeSession must be an object");
+  validateText(input.path, "resumeSession.path");
+  validateText(input.conversationId, "resumeSession.conversationId");
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,254}[A-Za-z0-9])?$/.test(input.conversationId)) {
+    throw new Error("resumeSession.conversationId is invalid");
+  }
+  let path: string;
+  let stat: ReturnType<typeof statSync>;
+  try {
+    path = realpathSync(resolve(input.path));
+    stat = statSync(path);
+  } catch {
+    throw new Error(`resumeSession.path does not exist: ${resolve(input.path)}`);
+  }
+  if (!stat.isFile()) throw new Error("resumeSession.path must be a regular file");
+  if (stat.size <= 0 || stat.size > 16 * 1024 * 1024) {
+    throw new Error("resumeSession.path must be between 1 byte and 16 MiB");
+  }
+  let header: Record<string, unknown>;
+  try {
+    const firstLine = readFileSync(path, "utf8").split("\n", 1)[0];
+    const parsed = firstLine ? JSON.parse(firstLine) as unknown : undefined;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid header");
+    header = parsed as Record<string, unknown>;
+  } catch {
+    throw new Error("resumeSession.path has an invalid session header");
+  }
+  if (header.type !== "session" || header.id !== input.conversationId || typeof header.cwd !== "string") {
+    throw new Error("resumeSession.path header does not match conversationId");
+  }
+  try {
+    if (realpathSync(resolve(header.cwd)) !== target) throw new Error("cwd mismatch");
+  } catch {
+    throw new Error("resumeSession.path header does not belong to target");
+  }
+  return {
+    path,
+    conversationId: input.conversationId,
+    device: stat.dev,
+    inode: stat.ino,
   };
 }
 

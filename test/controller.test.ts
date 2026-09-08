@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,6 +80,37 @@ describe("PersistentRpcController", () => {
       sessionFile: `${controller.snapshot().cwd}/.pi/sessions/fake.jsonl`,
       outstandingRequestIds: [],
     });
+  });
+
+  it("resumes an exact session and rejects identity or startup-file drift", async () => {
+    const target = tempRoot();
+    const sessionFile = join(target, "conversation.jsonl");
+    writeFileSync(sessionFile, `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "conversation-1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+      cwd: target,
+    })}\n`);
+    const record = join(target, "resume-invocation.json");
+    const controller = await start("normal", {
+      target,
+      resumeSession: { path: sessionFile, conversationId: "conversation-1" },
+      env: { FAKE_PI_RECORD: record },
+    });
+    const canonicalSessionFile = realpathSync(sessionFile);
+    expect(controller.snapshot()).toMatchObject({ sessionId: "conversation-1", sessionFile: canonicalSessionFile });
+    expect(JSON.parse(readFileSync(record, "utf8")).argv).toEqual(["--mode", "rpc", "--session", canonicalSessionFile]);
+    await controller.close();
+
+    await expect(PersistentRpcController.start(config("normal", {
+      target,
+      resumeSession: { path: sessionFile, conversationId: "different-id" },
+    }))).rejects.toThrow("header does not match conversationId");
+    await expect(PersistentRpcController.start(config("mutate-resume", {
+      target,
+      resumeSession: { path: sessionFile, conversationId: "conversation-1" },
+    }))).rejects.toThrow("header mismatch");
   });
 
   it("keeps one process for repeated prompts and emits each terminal outcome once", async () => {
@@ -308,7 +339,7 @@ describe("PersistentRpcController", () => {
     const controller = await start("stubborn-descendant", {
       target,
       env: { FAKE_DESCENDANT_RECORD: descendantRecord },
-      limits: { closeGraceMs: 30, killGraceMs: 100 },
+      limits: { closeGraceMs: 30, killGraceMs: 500 },
     });
     await waitUntil(() => existsSync(descendantRecord));
     const descendantPid = Number(readFileSync(descendantRecord, "utf8"));
