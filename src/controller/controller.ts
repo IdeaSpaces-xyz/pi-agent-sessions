@@ -662,6 +662,7 @@ export function buildPiArgv(config: ResolvedControllerConfig): string[] {
   const argv = [...config.launch.argvPrefix, "--mode", "rpc"];
   if (config.model) argv.push("--model", config.model);
   if (config.thinking) argv.push("--thinking", config.thinking);
+  if (config.sessionName) argv.push("--name", config.sessionName.trim());
   if (config.trust.mode === "explicit") argv.push("--approve");
   if (config.extensionPaths !== undefined) {
     argv.push("--no-extensions");

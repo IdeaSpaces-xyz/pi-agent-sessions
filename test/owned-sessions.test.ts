@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,8 +122,9 @@ class FakeController implements SessionController {
   }
 }
 
-function harness(root: string, options: { depth?: number; maxChildren?: number } = {}) {
+function harness(root: string, options: { depth?: number; maxChildren?: number; sessionDir?: string } = {}) {
   const controllers: FakeController[] = [];
+  const controllerConfigs: Array<{ target: string; sessionName?: string }> = [];
   const delivered: AgentReply[] = [];
   const held: AgentReply[] = [];
   const pointers: SessionPointer[] = [];
@@ -131,7 +132,10 @@ function harness(root: string, options: { depth?: number; maxChildren?: number }
     {
       collectionRoot: root,
       depth: options.depth,
-      controller: { limits: { maxChildren: options.maxChildren ?? 4 } },
+      controller: {
+        limits: { maxChildren: options.maxChildren ?? 4 },
+        ...(options.sessionDir ? { env: { PI_CODING_AGENT_SESSION_DIR: options.sessionDir } } : {}),
+      },
     },
     {
       deliver: (reply) => delivered.push(reply),
@@ -140,13 +144,14 @@ function harness(root: string, options: { depth?: number; maxChildren?: number }
     },
     {
       createController: async (config) => {
+        controllerConfigs.push({ target: config.target, sessionName: config.sessionName });
         const controller = new FakeController(config.target);
         controllers.push(controller);
         return controller;
       },
     },
   );
-  return { sessions, controllers, delivered, held, pointers };
+  return { sessions, controllers, controllerConfigs, delivered, held, pointers };
 }
 
 describe("OwnedAgentSessions", () => {
@@ -165,6 +170,26 @@ describe("OwnedAgentSessions", () => {
     expect(started.operation?.status).toBe("running");
     expect(controllers[0].target).toBe(list.roster?.agents[0].path);
     expect(pointers).toEqual([expect.objectContaining({ event: "started", agent: "Backend" })]);
+  });
+
+  it("lists only conversations owned by a discovered agent and names fresh sessions", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    const target = join(root, "Backend");
+    const sessionDir = join(root, "sessions");
+    await mkdir(sessionDir);
+    await writeFile(join(sessionDir, "conversation.jsonl"), [
+      JSON.stringify({ type: "session", version: 3, id: "space-loop", timestamp: "2026-09-08T10:00:00.000Z", cwd: target }),
+      JSON.stringify({ type: "message", id: "one", parentId: null, timestamp: "2026-09-08T10:00:01.000Z", message: { role: "user", content: "Discuss Space Loop" } }),
+      "",
+    ].join("\n"));
+    const { sessions, controllerConfigs } = harness(root, { sessionDir });
+
+    const catalog = await sessions.conversations({ agent: "Backend", query: "space loop" });
+    expect(catalog.conversations).toEqual([expect.objectContaining({ conversationId: "space-loop" })]);
+    await sessions.start({ agent: "Backend", message: "Continue", topic: "Space Loop" });
+    expect(controllerConfigs[0]).toMatchObject({ target: realpathSync(target), sessionName: "Space Loop" });
+    await expect(sessions.start({ agent: "Backend", message: "Continue", topic: " " })).rejects.toThrow("topic");
   });
 
   it("rejects nested launch before creating a controller", async () => {

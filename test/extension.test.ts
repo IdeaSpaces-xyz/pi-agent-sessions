@@ -164,6 +164,53 @@ describe("agent_session Pi extension", () => {
     await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
   });
 
+  it("lists bounded agent conversations and names a fresh conversation", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    const sessionDir = join(root, "sessions");
+    const invocation = join(root, "invocation.json");
+    await mkdir(sessionDir);
+    await writeFile(join(sessionDir, "space-loop.jsonl"), [
+      JSON.stringify({ type: "session", version: 3, id: "space-loop", timestamp: "2026-09-08T10:00:00.000Z", cwd: join(root, "Backend") }),
+      JSON.stringify({ type: "message", id: "one", parentId: null, timestamp: "2026-09-08T10:00:01.000Z", message: { role: "user", content: "Discuss Space Loop" } }),
+      JSON.stringify({ type: "session_info", id: "two", parentId: "one", timestamp: "2026-09-08T10:00:02.000Z", name: "Space Loop" }),
+      "",
+    ].join("\n"));
+    configure(root, "normal", {
+      PI_CODING_AGENT_SESSION_DIR: sessionDir,
+      FAKE_PI_RECORD: invocation,
+    });
+    const api = new FakeExtensionApi();
+    const context = fakeContext(api);
+    agentSessionsExtension(api as unknown as ExtensionAPI);
+    await api.emit("session_start", { type: "session_start", reason: "startup" }, context);
+    const tool = api.tools.find((candidate) => candidate.name === "agent_session");
+
+    const catalog = await tool.execute(
+      "call-1",
+      { action: "conversations", agent: "Backend", query: "space loop" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(catalog.content[0].text).toContain("Backend conversations (1):");
+    expect(catalog.content[0].text).toContain("space-loop — Space Loop");
+    expect(catalog.content[0].text).not.toContain(sessionDir);
+
+    const started = await tool.execute(
+      "call-2",
+      { action: "start", agent: "Backend", topic: "Space Loop follow-up", message: "Continue" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(started.content[0].text).toContain("Conversation: fake-session.");
+    const launch = JSON.parse(await readFile(invocation, "utf8"));
+    expect(launch.argv).toContain("--name");
+    expect(launch.argv).toContain("Space Loop follow-up");
+    await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
+  });
+
   it("starts background children and delivers exact labelled custom messages while parent busy or idle", async () => {
     const root = tempRoot();
     await makeAgent(root, "Backend");
@@ -185,7 +232,7 @@ describe("agent_session Pi extension", () => {
     expect(backend.content[0].text).toMatch(/^Started Backend — (running|idle) — runId:/);
     expect(frontend.content[0].text).toMatch(/^Started Frontend — (running|idle) — runId:/);
     expect(backend.content[0].text).not.toContain("Transcript:");
-    expect(frontend.content[0].text).not.toContain("fake-session");
+    expect(frontend.content[0].text).toContain("Conversation: fake-session.");
     expect(api.messages.map((item) => item.parentBusy)).toEqual([true, false]);
     for (const delivered of api.messages) {
       expect(delivered.options).toEqual({ deliverAs: "followUp", triggerTurn: true });

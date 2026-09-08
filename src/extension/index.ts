@@ -7,6 +7,7 @@ import type {
   AgentReply,
   OwnedRunSnapshot,
   OwnedSessionsList,
+  ListConversationsResult,
   OwnedSessionsStatus,
   SessionOperationResult,
   SessionPointer,
@@ -27,15 +28,17 @@ const MAX_TOOL_OUTPUT_BYTES = 48 * 1024;
 const SESSION_WIDGET = "agent-sessions";
 const MAX_WIDGET_RUNS = 4;
 
-const ActionSchema = StringEnum(["list", "start", "send", "status", "interrupt", "close"] as const);
+const ActionSchema = StringEnum(["list", "conversations", "start", "send", "status", "interrupt", "close"] as const);
 const BusyModeSchema = StringEnum(["steer", "followUp"] as const);
 const ThinkingSchema = StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const);
 
 const AgentSessionParams = Type.Object({
   action: ActionSchema,
-  agent: Type.Optional(Type.String({ description: "Discovered agent name; required for start" })),
+  agent: Type.Optional(Type.String({ description: "Discovered agent name; required for conversations and start" })),
   runId: Type.Optional(Type.String({ description: "Owned run id; required for send, interrupt, and close" })),
   message: Type.Optional(Type.String({ description: "Message for start or send" })),
+  query: Type.Optional(Type.String({ description: "Optional bounded name/first-message query for conversations" })),
+  topic: Type.Optional(Type.String({ description: "Optional durable Pi session name for start" })),
   busyMode: Type.Optional(BusyModeSchema),
   model: Type.Optional(Type.String({ description: "Optional child model override for start" })),
   thinking: Type.Optional(ThinkingSchema),
@@ -45,10 +48,12 @@ const AgentSessionParams = Type.Object({
 });
 
 export interface AgentSessionToolInput {
-  action: "list" | "start" | "send" | "status" | "interrupt" | "close";
+  action: "list" | "conversations" | "start" | "send" | "status" | "interrupt" | "close";
   agent?: string;
   runId?: string;
   message?: string;
+  query?: string;
+  topic?: string;
   busyMode?: "steer" | "followUp";
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -181,7 +186,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
       "List configured fellow agents and own persistent Pi child sessions. Start only a discovered agent, continue its existing run, inspect bounded status and unread replies, interrupt one turn, or close the process.",
     promptSnippet: "List, start, continue, inspect, interrupt, or close persistent fellow-agent sessions",
     promptGuidelines: [
-      "Use agent_session only for configured fellow agents; start accepts an agent name, never an arbitrary folder.",
+      "Use agent_session only for configured fellow agents; conversations and start accept an agent name, never an arbitrary folder or session path.",
       "Start and send return after the background turn begins. Tell the person once, then wait for the automatic fellow-agent reply; do not poll or send another message merely to retrieve it.",
       "When an automatic fellow-agent reply arrives, relay its substantive answer to the person; do not merely acknowledge receipt or repeat transport metadata.",
       "Use status when the person asks, when a reply was held by branch movement, or when diagnosing a problem. Set includeEvents only for diagnostics.",
@@ -200,11 +205,23 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
           const list = await sessions.list();
           return result(formatList(list), { list, history: historicalPointers });
         }
+        case "conversations": {
+          const agent = required(params.agent, "agent_session conversations requires agent");
+          onUpdate?.(progress(`Listing ${agent} conversations…`));
+          const catalog = await sessions.conversations({ agent, query: params.query });
+          return result(formatConversations(catalog), { catalog });
+        }
         case "start": {
           const agent = required(params.agent, "agent_session start requires agent");
           const message = required(params.message, "agent_session start requires message");
           onUpdate?.(progress(`Starting ${agent}…`));
-          const started = await sessions.start({ agent, message, model: params.model, thinking: params.thinking });
+          const started = await sessions.start({
+            agent,
+            message,
+            topic: params.topic,
+            model: params.model,
+            thinking: params.thinking,
+          });
           return result(formatOperation("Started", started), { operation: started });
         }
         case "send": {
@@ -274,6 +291,20 @@ function formatList(list: OwnedSessionsList): string {
   return lines.join("\n");
 }
 
+function formatConversations(catalog: ListConversationsResult): string {
+  const bounded = catalog.truncated ? "+; bounded" : "";
+  const lines = [`${catalog.agent} conversations (${catalog.conversations.length}${bounded}):`];
+  if (catalog.conversations.length === 0) lines.push("none");
+  for (const conversation of catalog.conversations) {
+    const title = (conversation.name ?? conversation.firstMessage) || "(unnamed)";
+    lines.push(
+      `${conversation.conversationId} — ${title} — ${conversation.modifiedAt} — ${conversation.messageCount} messages`,
+    );
+  }
+  if (catalog.skippedEntries > 0) lines.push(`Skipped invalid or oversized entries: ${catalog.skippedEntries}`);
+  return lines.join("\n");
+}
+
 function buildSessionWidget(status: OwnedSessionsStatus): string[] | undefined {
   const visible = status.runs.filter((run) => {
     const state = run.session.status;
@@ -309,7 +340,10 @@ function formatOperation(verb: string, operation: SessionOperationResult): strin
     : queued
       ? ` Queued for operation: ${queued}.`
       : "";
-  return `${verb} ${formatRunLine(operation.run)}.${suffix}`;
+  const conversation = operation.run.session.sessionId
+    ? ` Conversation: ${operation.run.session.sessionId}.`
+    : "";
+  return `${verb} ${formatRunLine(operation.run)}.${conversation}${suffix}`;
 }
 
 function formatRunLine(run: OwnedRunSnapshot): string {

@@ -46,6 +46,8 @@ export interface AgentSessionControllerConfig {
   skillPaths?: readonly string[];
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** Optional durable Pi session display name for a newly started conversation. */
+  sessionName?: string;
   env?: Readonly<Record<string, string | undefined>>;
   limits?: Partial<ControllerLimits>;
 }

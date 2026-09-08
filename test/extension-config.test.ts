@@ -21,6 +21,7 @@ describe("agent session extension config", () => {
           collectionRoot: "/host/agents",
           approveProjectResources: false,
           discovery: { maxAgents: 25 },
+          conversations: { maxConversations: 12, maxFileBytes: 4096 },
           controller: {
             executable: { command: "/host/pi", argvPrefix: ["cli.js"] },
             extensionPaths: ["/host/extensions/a.js"],
@@ -38,6 +39,7 @@ describe("agent session extension config", () => {
         approveProjectResources: false,
         depth: 0,
         discovery: { maxAgents: 25 },
+        conversations: { maxConversations: 12, maxFileBytes: 4096 },
         controller: {
           executable: { command: "/host/pi", argvPrefix: ["cli.js"] },
           extensionPaths: ["/host/extensions/a.js"],
@@ -78,6 +80,9 @@ describe("agent session extension config", () => {
     expect(() =>
       resolveExtensionConfig(flags({}), { [HOST_CONFIG_ENV]: JSON.stringify({ controller: { limits: { maxChildren: 1.5 } } }) }),
     ).toThrow("integer");
+    expect(() =>
+      resolveExtensionConfig(flags({}), { [HOST_CONFIG_ENV]: JSON.stringify({ conversations: { typo: 1 } }) }),
+    ).toThrow("unknown field");
   });
 
   it("parses only a bounded non-negative launch depth", () => {

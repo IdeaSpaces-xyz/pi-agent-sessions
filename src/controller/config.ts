@@ -68,6 +68,10 @@ export function resolveControllerConfig(
 
   validateOptionalText(input.model, "model");
   validateOptionalText(input.thinking, "thinking");
+  validateOptionalText(input.sessionName, "sessionName");
+  if (input.sessionName !== undefined && input.sessionName.trim().length > 200) {
+    throw new Error("sessionName cannot exceed 200 characters");
+  }
   validateEnvironment(input.env);
   requireSavedTrust(input, target, agentDir);
 

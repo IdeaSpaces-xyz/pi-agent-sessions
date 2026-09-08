@@ -1,5 +1,6 @@
 import type { AgentSessionControllerConfig, ControllerLimits, PiExecutableConfig } from "../controller/types.js";
 import type { AgentDiscoveryOptions } from "../discovery/types.js";
+import type { ConversationCatalogLimits } from "../conversations/types.js";
 import type { OwnedAgentSessionsConfig } from "../sessions/types.js";
 
 export const HOST_CONFIG_ENV = "PI_AGENT_SESSIONS_CONFIG";
@@ -61,6 +62,7 @@ function parseHostConfig(value: string): Omit<OwnedAgentSessionsConfig, "depth">
     "collectionRoot",
     "approveProjectResources",
     "discovery",
+    "conversations",
     "controller",
   ], HOST_CONFIG_ENV);
 
@@ -68,6 +70,7 @@ function parseHostConfig(value: string): Omit<OwnedAgentSessionsConfig, "depth">
     collectionRoot: optionalString(object.collectionRoot, "collectionRoot"),
     approveProjectResources: optionalBoolean(object.approveProjectResources, "approveProjectResources"),
     discovery: parseDiscovery(object.discovery),
+    conversations: parseConversationLimits(object.conversations),
     controller: parseController(object.controller),
   };
 }
@@ -82,9 +85,28 @@ function parseDiscovery(value: unknown): AgentDiscoveryOptions | undefined {
   };
 }
 
+function parseConversationLimits(value: unknown): Partial<ConversationCatalogLimits> | undefined {
+  if (value === undefined) return undefined;
+  const object = requireObject(value, "conversations");
+  const keys: Array<keyof ConversationCatalogLimits> = [
+    "maxConversations",
+    "maxScannedEntries",
+    "maxFileBytes",
+    "maxPreviewChars",
+    "maxQueryChars",
+  ];
+  rejectUnknownKeys(object, keys, "conversations");
+  const limits: Partial<ConversationCatalogLimits> = {};
+  for (const key of keys) {
+    const number = optionalNumber(object[key], `conversations.${key}`);
+    if (number !== undefined) limits[key] = number;
+  }
+  return limits;
+}
+
 function parseController(
   value: unknown,
-): Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking"> | undefined {
+): Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName"> | undefined {
   if (value === undefined) return undefined;
   const object = requireObject(value, "controller");
   rejectUnknownKeys(object, [
