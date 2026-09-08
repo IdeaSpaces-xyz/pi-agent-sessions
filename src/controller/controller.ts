@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import type { Writable } from "node:stream";
 import { resolveControllerConfig } from "./config.js";
 import { attachStrictJsonlReader, serializeJsonl } from "./jsonl.js";
@@ -280,10 +281,48 @@ export class PersistentRpcController {
     if (typeof state.sessionId !== "string" || state.sessionId === "") {
       throw new Error("Pi get_state response is missing sessionId");
     }
+    this.verifyResumedSession(state);
     this.sessionId = state.sessionId;
     if (typeof state.sessionFile === "string") this.sessionFile = state.sessionFile;
     this.status = state.isStreaming === true ? "running" : "idle";
     this.notifyStateChanged();
+  }
+
+  private verifyResumedSession(state: Record<string, unknown>): void {
+    const expected = this.config.resumeSession;
+    if (!expected) return;
+    if (state.sessionId !== expected.conversationId) {
+      throw new Error(`Resumed session id mismatch: expected ${expected.conversationId}, got ${String(state.sessionId)}`);
+    }
+    if (typeof state.sessionFile !== "string") throw new Error("Resumed Pi state is missing sessionFile");
+    let actualPath: string;
+    let stat: ReturnType<typeof statSync>;
+    try {
+      actualPath = realpathSync(state.sessionFile);
+      stat = statSync(actualPath);
+    } catch {
+      throw new Error("Resumed Pi session file is no longer a readable regular file");
+    }
+    if (actualPath !== expected.path || !stat.isFile()) throw new Error("Resumed Pi session file mismatch");
+    if (stat.dev !== expected.device || stat.ino !== expected.inode) {
+      throw new Error("Resumed Pi session changed during startup");
+    }
+    let header: Record<string, unknown>;
+    try {
+      const firstLine = readFileSync(actualPath, "utf8").split("\n", 1)[0];
+      const parsed = firstLine ? JSON.parse(firstLine) as unknown : undefined;
+      header = asObject(parsed, "resumed session header");
+    } catch {
+      throw new Error("Resumed Pi session header became invalid during startup");
+    }
+    if (header.type !== "session" || header.id !== expected.conversationId || typeof header.cwd !== "string") {
+      throw new Error("Resumed Pi session header mismatch");
+    }
+    try {
+      if (realpathSync(header.cwd) !== this.config.target) throw new Error("cwd mismatch");
+    } catch {
+      throw new Error("Resumed Pi session cwd mismatch");
+    }
   }
 
   private async closeInternal(): Promise<void> {
@@ -663,6 +702,7 @@ export function buildPiArgv(config: ResolvedControllerConfig): string[] {
   if (config.model) argv.push("--model", config.model);
   if (config.thinking) argv.push("--thinking", config.thinking);
   if (config.sessionName) argv.push("--name", config.sessionName.trim());
+  if (config.resumeSession) argv.push("--session", config.resumeSession.path);
   if (config.trust.mode === "explicit") argv.push("--approve");
   if (config.extensionPaths !== undefined) {
     argv.push("--no-extensions");

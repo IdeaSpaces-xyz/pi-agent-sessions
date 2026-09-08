@@ -36,6 +36,17 @@ export interface ControllerLimits {
   maxChildren: number;
 }
 
+export interface ResumeSessionConfig {
+  path: string;
+  conversationId: string;
+}
+
+export interface ResolvedResumeSession extends ResumeSessionConfig {
+  path: string;
+  device: number;
+  inode: number;
+}
+
 export interface AgentSessionControllerConfig {
   target: string;
   trust: TrustPolicy;
@@ -48,6 +59,7 @@ export interface AgentSessionControllerConfig {
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Optional durable Pi session display name for a newly started conversation. */
   sessionName?: string;
+  resumeSession?: ResumeSessionConfig;
   env?: Readonly<Record<string, string | undefined>>;
   limits?: Partial<ControllerLimits>;
 }
@@ -59,7 +71,8 @@ export interface ResolvedLaunch {
 }
 
 export interface ResolvedControllerConfig
-  extends Omit<AgentSessionControllerConfig, "target" | "executable" | "limits"> {
+  extends Omit<AgentSessionControllerConfig, "target" | "executable" | "limits" | "resumeSession"> {
+  resumeSession?: ResolvedResumeSession;
   target: string;
   launch: ResolvedLaunch;
   limits: ControllerLimits;

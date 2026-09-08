@@ -106,7 +106,7 @@ function parseConversationLimits(value: unknown): Partial<ConversationCatalogLim
 
 function parseController(
   value: unknown,
-): Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName"> | undefined {
+): Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName" | "resumeSession"> | undefined {
   if (value === undefined) return undefined;
   const object = requireObject(value, "controller");
   rejectUnknownKeys(object, [

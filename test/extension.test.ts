@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -106,11 +106,13 @@ function fakeContext(api: FakeExtensionApi): ExtensionContext {
 }
 
 function configure(root: string, scenario: string, extraEnv: Record<string, string> = {}): void {
+  mkdirSync(join(root, "agent-state"), { recursive: true });
   process.env[HOST_CONFIG_ENV] = JSON.stringify({
     collectionRoot: root,
     approveProjectResources: true,
     controller: {
       executable: { command: process.execPath, argvPrefix: [fakePi] },
+      agentDir: join(root, "agent-state"),
       env: { FAKE_PI_SCENARIO: scenario, ...extraEnv },
       limits: {
         startupTimeoutMs: 5_000,
@@ -208,6 +210,16 @@ describe("agent_session Pi extension", () => {
     const launch = JSON.parse(await readFile(invocation, "utf8"));
     expect(launch.argv).toContain("--name");
     expect(launch.argv).toContain("Space Loop follow-up");
+
+    const resumed = await tool.execute(
+      "call-3",
+      { action: "resume", agent: "Backend", conversationId: "space-loop", message: "What changed?" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(resumed.content[0].text).toContain("Resumed Backend");
+    expect(resumed.content[0].text).toContain("Conversation: space-loop.");
     await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
   });
 

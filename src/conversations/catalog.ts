@@ -49,7 +49,16 @@ export function resolveAgentSessionDir(
   const configuredEnvironment = effectiveEnvironmentValue(options.env, "PI_CODING_AGENT_SESSION_DIR");
   if (configuredEnvironment) return resolveConfiguredPath(configuredEnvironment, canonicalTarget);
 
-  return defaultSessionDir(canonicalTarget, options.agentDir);
+  const agentDir = resolveAgentDir(options.agentDir, options.env);
+  const configuredSettings = readSessionDirSetting(join(canonicalTarget, ".pi", "settings.json")) ??
+    readSessionDirSetting(join(agentDir, "settings.json"));
+  if (configuredSettings) return resolveConfiguredPath(configuredSettings, canonicalTarget);
+  return defaultSessionDir(canonicalTarget, agentDir);
+}
+
+export interface ResolvedAgentConversation {
+  conversation: AgentConversation;
+  path: string;
 }
 
 export function listAgentConversations(
@@ -82,13 +91,13 @@ export function listAgentConversations(
     }
     const candidate = join(sessionDir, entry.name);
     const parsed = readConversation(candidate, sessionDir, canonicalTarget, limits);
-    if (!parsed || ids.has(parsed.conversationId)) {
+    if (!parsed || ids.has(parsed.conversation.conversationId)) {
       skippedEntries += 1;
       continue;
     }
-    ids.add(parsed.conversationId);
-    if (query && !conversationMatches(parsed, query)) continue;
-    if (conversations.length < limits.maxConversations) conversations.push(parsed);
+    ids.add(parsed.conversation.conversationId);
+    if (query && !conversationMatches(parsed.conversation, query)) continue;
+    if (conversations.length < limits.maxConversations) conversations.push(parsed.conversation);
   }
 
   return {
@@ -100,12 +109,38 @@ export function listAgentConversations(
   };
 }
 
+export function resolveAgentConversation(
+  target: string,
+  conversationId: string,
+  options: Omit<ConversationCatalogOptions, "query"> = {},
+): ResolvedAgentConversation {
+  if (!validId(conversationId)) throw new Error("conversationId must be an exact valid Pi session id");
+  const limits = validateConversationLimits(options.limits);
+  const canonicalTarget = realpathSync(resolve(target));
+  const configuredDir = resolveAgentSessionDir(canonicalTarget, options);
+  if (!existsSync(configuredDir)) throw new Error(`Unknown conversationId: ${conversationId}`);
+  const sessionDir = realpathSync(configuredDir);
+  const entries = readdirSync(sessionDir, { withFileTypes: true })
+    .filter((entry) => entry.name.endsWith(".jsonl"))
+    .sort((left, right) => right.name.localeCompare(left.name))
+    .slice(0, limits.maxScannedEntries);
+  const matches: ResolvedAgentConversation[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const parsed = readConversation(join(sessionDir, entry.name), sessionDir, canonicalTarget, limits);
+    if (parsed?.conversation.conversationId === conversationId) matches.push(parsed);
+  }
+  if (matches.length === 0) throw new Error(`Unknown conversationId: ${conversationId}`);
+  if (matches.length > 1) throw new Error(`Ambiguous conversationId: ${conversationId}`);
+  return matches[0]!;
+}
+
 function readConversation(
   candidate: string,
   sessionDir: string,
   canonicalTarget: string,
   limits: ConversationCatalogLimits,
-): AgentConversation | undefined {
+): ResolvedAgentConversation | undefined {
   let real: string;
   let stat: ReturnType<typeof statSync>;
   try {
@@ -165,17 +200,39 @@ function readConversation(
 
   const createdAt = validDate(header.timestamp) ?? stat.birthtime.toISOString();
   return {
-    conversationId: header.id,
-    ...(name ? { name } : {}),
-    firstMessage,
-    createdAt,
-    modifiedAt: stat.mtime.toISOString(),
-    messageCount,
+    path: real,
+    conversation: {
+      conversationId: header.id,
+      ...(name ? { name } : {}),
+      firstMessage,
+      createdAt,
+      modifiedAt: stat.mtime.toISOString(),
+      messageCount,
+    },
   };
 }
 
-function defaultSessionDir(target: string, agentDir?: string): string {
-  const root = resolve(agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
+function resolveAgentDir(
+  agentDir: string | undefined,
+  env: Readonly<Record<string, string | undefined>> | undefined,
+): string {
+  return resolve(agentDir ?? effectiveEnvironmentValue(env, "PI_CODING_AGENT_DIR") ?? join(homedir(), ".pi", "agent"));
+}
+
+function readSessionDirSetting(path: string): string | undefined {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return undefined;
+    const settings = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, "")) as unknown;
+    if (!isRecord(settings) || typeof settings.sessionDir !== "string" || !settings.sessionDir.trim()) return undefined;
+    return settings.sessionDir;
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultSessionDir(target: string, agentDir: string): string {
+  const root = resolve(agentDir);
   const safePath = `--${resolve(target).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
   return join(root, "sessions", safePath);
 }

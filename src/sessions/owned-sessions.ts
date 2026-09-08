@@ -3,7 +3,8 @@ import { DEFAULT_LIMITS, validateLimits } from "../controller/config.js";
 import type { AgentSessionSnapshot, TurnSnapshot } from "../controller/types.js";
 import { discoverAgentRoster, revalidateAgentTarget } from "../discovery/discovery.js";
 import type { AgentRoster } from "../discovery/types.js";
-import { listAgentConversations } from "../conversations/catalog.js";
+import { listAgentConversations, resolveAgentConversation } from "../conversations/catalog.js";
+import { acquireConversationLease } from "../conversations/lease.js";
 import type {
   AgentReply,
   OwnedAgentSessionsConfig,
@@ -15,6 +16,7 @@ import type {
   ListConversationsInput,
   ListConversationsResult,
   SendSessionInput,
+  ResumeSessionInput,
   SessionController,
   SessionOperationResult,
   SessionPointer,
@@ -36,6 +38,7 @@ interface ManagedRun {
   unsubscribeUi?: () => void;
   unsubscribeState?: () => void;
   closedPointerWritten: boolean;
+  releaseLease?: () => void;
 }
 
 export class OwnedAgentSessions {
@@ -122,45 +125,71 @@ export class OwnedAgentSessions {
         thinking: input.thinking,
         sessionName: input.topic?.trim(),
       });
-      const runGeneration = this.generation;
-      const run: ManagedRun = {
-        agent: target.name,
-        controller,
-        createdEpoch: this.branchEpoch,
-        operationEpochs: new Map(),
-        watchedOperations: new Set(),
-        settledOperations: new Set(),
-        pendingSettlements: new Map(),
-        unread: [],
-        commandTail: Promise.resolve(),
-        closedPointerWritten: false,
-      };
-      if (controller.onTurnSettled) {
-        run.unsubscribeSettled = controller.onTurnSettled((turn) => {
-          if (!run.operationEpochs.has(turn.operationId)) {
-            run.pendingSettlements.set(turn.operationId, turn);
-            return;
-          }
-          void this.settleOperation(run, turn, runGeneration);
-        });
-      }
-      if (controller.onUiEvent) {
-        run.unsubscribeUi = controller.onUiEvent((event) => {
-          if (this.runs.get(controller.runId) !== run) return;
-          if (!this.accepting && event.type === "request") return;
-          this.hooks.uiEvent?.({ agent: run.agent, runId: controller.runId, event });
-        });
-      }
-      if (controller.onStateChanged) {
-        run.unsubscribeState = controller.onStateChanged(() => {
-          if (this.runs.get(controller.runId) === run) this.hooks.stateChanged?.();
-        });
-      }
-      this.runs.set(controller.runId, run);
-      this.writePointer(run, "started");
+      const run = this.registerRun(target.name, controller);
       const operation = await this.beginPrompt(run, input.message);
       this.hooks.stateChanged?.();
       return { run: this.snapshotRun(run, false), operation };
+    });
+  }
+
+  async resume(input: ResumeSessionInput): Promise<SessionOperationResult> {
+    return this.serializeStart(async () => {
+      this.requireAccepting();
+      if ((this.config.depth ?? 0) > 0) throw new Error("Nested agent sessions are disabled in this release");
+      validateMessage(input.message);
+      validateName(input.agent);
+      const collectionRoot = this.requireCollectionRoot();
+      const roster = await this.refreshRoster();
+      const discovered = roster.agents.find((agent) => agent.name === input.agent);
+      if (!discovered) throw new Error(`Unknown agent: ${input.agent}`);
+      const target = await revalidateAgentTarget(collectionRoot, discovered);
+      const liveCount = [...this.runs.values()].filter((run) => isLive(run.controller.snapshot())).length;
+      const maxChildren = validateLimits(this.config.controller?.limits).maxChildren;
+      if (liveCount >= maxChildren) throw new Error(`Owned live session limit reached (${maxChildren})`);
+
+      const options = {
+        limits: this.config.conversations,
+        agentDir: this.config.controller?.agentDir,
+        env: this.config.controller?.env,
+      };
+      const selected = resolveAgentConversation(target.path, input.conversationId, options);
+      const lease = acquireConversationLease(
+        selected.path,
+        this.config.controller?.agentDir,
+        this.config.controller?.env,
+      );
+      let controller: SessionController | undefined;
+      try {
+        const revalidated = resolveAgentConversation(target.path, input.conversationId, options);
+        if (revalidated.path !== selected.path) throw new Error("Conversation path changed before resume");
+        controller = await this.createController({
+          ...this.config.controller,
+          target: target.path,
+          trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
+          model: input.model,
+          thinking: input.thinking,
+          resumeSession: { path: revalidated.path, conversationId: input.conversationId },
+        });
+        const childPid = controller.snapshot().pid;
+        if (!childPid) throw new Error("Resumed controller did not expose its process id");
+        lease.setOwnerPid(childPid);
+      } catch (error) {
+        await controller?.close().catch(() => undefined);
+        lease.release();
+        throw error;
+      }
+      const run = this.registerRun(target.name, controller, lease.release);
+      try {
+        const operation = await this.beginPrompt(run, input.message);
+        this.hooks.stateChanged?.();
+        return { run: this.snapshotRun(run, false), operation };
+      } catch (error) {
+        await controller.close().catch(() => undefined);
+        this.releaseRunLease(run);
+        this.unsubscribeRun(run);
+        this.runs.delete(controller.runId);
+        throw error;
+      }
     });
   }
 
@@ -231,10 +260,14 @@ export class OwnedAgentSessions {
   async close(runId: string): Promise<OwnedRunSnapshot> {
     const run = this.requireRun(runId);
     return this.serializeRun(run, async () => {
-      await run.controller.close();
-      this.unsubscribeRun(run);
-      this.writePointer(run, "closed");
-      this.hooks.stateChanged?.();
+      try {
+        await run.controller.close();
+      } finally {
+        this.releaseRunLease(run);
+        this.unsubscribeRun(run);
+        this.writePointer(run, "closed");
+        this.hooks.stateChanged?.();
+      }
       return this.snapshotRun(run, false);
     });
   }
@@ -247,6 +280,7 @@ export class OwnedAgentSessions {
       [...this.runs.values()].map((run) =>
         this.serializeRun(run, async () => {
           await run.controller.close().catch(() => undefined);
+          this.releaseRunLease(run);
           this.unsubscribeRun(run);
           this.writePointer(run, "closed");
         }),
@@ -255,6 +289,53 @@ export class OwnedAgentSessions {
       this.hooks.stateChanged?.();
     });
     return this.shutdownPromise;
+  }
+
+  private registerRun(agent: string, controller: SessionController, releaseLease?: () => void): ManagedRun {
+    const runGeneration = this.generation;
+    const run: ManagedRun = {
+      agent,
+      controller,
+      createdEpoch: this.branchEpoch,
+      operationEpochs: new Map(),
+      watchedOperations: new Set(),
+      settledOperations: new Set(),
+      pendingSettlements: new Map(),
+      unread: [],
+      commandTail: Promise.resolve(),
+      closedPointerWritten: false,
+      releaseLease,
+    };
+    if (controller.onTurnSettled) {
+      run.unsubscribeSettled = controller.onTurnSettled((turn) => {
+        if (!run.operationEpochs.has(turn.operationId)) {
+          run.pendingSettlements.set(turn.operationId, turn);
+          return;
+        }
+        void this.settleOperation(run, turn, runGeneration);
+      });
+    }
+    if (controller.onUiEvent) {
+      run.unsubscribeUi = controller.onUiEvent((event) => {
+        if (this.runs.get(controller.runId) !== run) return;
+        if (!this.accepting && event.type === "request") return;
+        this.hooks.uiEvent?.({ agent: run.agent, runId: controller.runId, event });
+      });
+    }
+    if (controller.onStateChanged) {
+      run.unsubscribeState = controller.onStateChanged(() => {
+        if (this.runs.get(controller.runId) !== run) return;
+        this.hooks.stateChanged?.();
+      });
+    }
+    this.runs.set(controller.runId, run);
+    this.writePointer(run, "started");
+    return run;
+  }
+
+  private releaseRunLease(run: ManagedRun): void {
+    run.releaseLease?.();
+    run.releaseLease = undefined;
   }
 
   private unsubscribeRun(run: ManagedRun): void {

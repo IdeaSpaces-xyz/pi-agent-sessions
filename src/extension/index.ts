@@ -28,7 +28,7 @@ const MAX_TOOL_OUTPUT_BYTES = 48 * 1024;
 const SESSION_WIDGET = "agent-sessions";
 const MAX_WIDGET_RUNS = 4;
 
-const ActionSchema = StringEnum(["list", "conversations", "start", "send", "status", "interrupt", "close"] as const);
+const ActionSchema = StringEnum(["list", "conversations", "start", "resume", "send", "status", "interrupt", "close"] as const);
 const BusyModeSchema = StringEnum(["steer", "followUp"] as const);
 const ThinkingSchema = StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const);
 
@@ -39,6 +39,7 @@ const AgentSessionParams = Type.Object({
   message: Type.Optional(Type.String({ description: "Message for start or send" })),
   query: Type.Optional(Type.String({ description: "Optional bounded name/first-message query for conversations" })),
   topic: Type.Optional(Type.String({ description: "Optional durable Pi session name for start" })),
+  conversationId: Type.Optional(Type.String({ description: "Exact catalog conversation id; required for resume" })),
   busyMode: Type.Optional(BusyModeSchema),
   model: Type.Optional(Type.String({ description: "Optional child model override for start" })),
   thinking: Type.Optional(ThinkingSchema),
@@ -48,12 +49,13 @@ const AgentSessionParams = Type.Object({
 });
 
 export interface AgentSessionToolInput {
-  action: "list" | "conversations" | "start" | "send" | "status" | "interrupt" | "close";
+  action: "list" | "conversations" | "start" | "resume" | "send" | "status" | "interrupt" | "close";
   agent?: string;
   runId?: string;
   message?: string;
   query?: string;
   topic?: string;
+  conversationId?: string;
   busyMode?: "steer" | "followUp";
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -183,10 +185,10 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
     name: "agent_session",
     label: "Agent Session",
     description:
-      "List configured fellow agents and own persistent Pi child sessions. Start only a discovered agent, continue its existing run, inspect bounded status and unread replies, interrupt one turn, or close the process.",
-    promptSnippet: "List, start, continue, inspect, interrupt, or close persistent fellow-agent sessions",
+      "List configured fellow agents and their bounded conversation metadata. Start a new conversation, resume an exact prior conversation in a new owned process, continue a live run, inspect status, interrupt, or close.",
+    promptSnippet: "List, start, resume, continue, inspect, interrupt, or close fellow-agent conversations",
     promptGuidelines: [
-      "Use agent_session only for configured fellow agents; conversations and start accept an agent name, never an arbitrary folder or session path.",
+      "Use agent_session only for configured fellow agents; conversations, start, and resume accept an agent name, never an arbitrary folder or session path.",
       "Start and send return after the background turn begins. Tell the person once, then wait for the automatic fellow-agent reply; do not poll or send another message merely to retrieve it.",
       "When an automatic fellow-agent reply arrives, relay its substantive answer to the person; do not merely acknowledge receipt or repeat transport metadata.",
       "Use status when the person asks, when a reply was held by branch movement, or when diagnosing a problem. Set includeEvents only for diagnostics.",
@@ -223,6 +225,20 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             thinking: params.thinking,
           });
           return result(formatOperation("Started", started), { operation: started });
+        }
+        case "resume": {
+          const agent = required(params.agent, "agent_session resume requires agent");
+          const conversationId = required(params.conversationId, "agent_session resume requires conversationId");
+          const message = required(params.message, "agent_session resume requires message");
+          onUpdate?.(progress(`Resuming ${agent} conversation…`));
+          const resumed = await sessions.resume({
+            agent,
+            conversationId,
+            message,
+            model: params.model,
+            thinking: params.thinking,
+          });
+          return result(formatOperation("Resumed", resumed), { operation: resumed });
         }
         case "send": {
           const runId = required(params.runId, "agent_session send requires runId");

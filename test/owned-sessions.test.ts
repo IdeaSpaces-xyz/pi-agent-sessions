@@ -39,15 +39,19 @@ class FakeController implements SessionController {
   maxConcurrentCommands = 0;
   private concurrentCommands = 0;
 
-  constructor(readonly target: string) {}
+  private readonly sessionId: string;
+
+  constructor(readonly target: string, sessionId?: string) {
+    this.sessionId = sessionId ?? `session-${this.runId}`;
+  }
 
   snapshot(): AgentSessionSnapshot {
     return {
       runId: this.runId,
-      pid: 1000 + FakeController.sequence,
+      pid: process.pid,
       cwd: this.target,
       status: this.status,
-      sessionId: `session-${this.runId}`,
+      sessionId: this.sessionId,
       sessionFile: join(this.target, ".pi", "sessions", `${this.runId}.jsonl`),
       activeTools: this.status === "running" ? [{ toolCallId: "tool-1", toolName: "read" }] : [],
       outstandingRequestIds: [],
@@ -133,6 +137,7 @@ function harness(root: string, options: { depth?: number; maxChildren?: number; 
       collectionRoot: root,
       depth: options.depth,
       controller: {
+        agentDir: join(root, "agent-state"),
         limits: { maxChildren: options.maxChildren ?? 4 },
         ...(options.sessionDir ? { env: { PI_CODING_AGENT_SESSION_DIR: options.sessionDir } } : {}),
       },
@@ -145,7 +150,7 @@ function harness(root: string, options: { depth?: number; maxChildren?: number; 
     {
       createController: async (config) => {
         controllerConfigs.push({ target: config.target, sessionName: config.sessionName });
-        const controller = new FakeController(config.target);
+        const controller = new FakeController(config.target, config.resumeSession?.conversationId);
         controllers.push(controller);
         return controller;
       },
@@ -190,6 +195,47 @@ describe("OwnedAgentSessions", () => {
     await sessions.start({ agent: "Backend", message: "Continue", topic: "Space Loop" });
     expect(controllerConfigs[0]).toMatchObject({ target: realpathSync(target), sessionName: "Space Loop" });
     await expect(sessions.start({ agent: "Backend", message: "Continue", topic: " " })).rejects.toThrow("topic");
+  });
+
+  it("resumes an exact target-owned conversation under an exclusive lease", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    const target = join(root, "Backend");
+    const sessionDir = join(root, "sessions");
+    await mkdir(sessionDir);
+    await writeFile(join(sessionDir, "conversation.jsonl"), [
+      JSON.stringify({ type: "session", version: 3, id: "space-loop", timestamp: "2026-09-08T10:00:00.000Z", cwd: target }),
+      JSON.stringify({ type: "message", id: "one", parentId: null, timestamp: "2026-09-08T10:00:01.000Z", message: { role: "user", content: "Discuss Space Loop" } }),
+      "",
+    ].join("\n"));
+    const firstParent = harness(root, { sessionDir });
+    const secondParent = harness(root, { sessionDir });
+
+    const resumed = await firstParent.sessions.resume({
+      agent: "Backend",
+      conversationId: "space-loop",
+      message: "What changed?",
+    });
+    expect(resumed.run.session).toMatchObject({ sessionId: "space-loop", status: "running" });
+    await expect(secondParent.sessions.resume({
+      agent: "Backend",
+      conversationId: "space-loop",
+      message: "Race",
+    })).rejects.toThrow("already leased");
+    await expect(secondParent.sessions.resume({
+      agent: "Backend",
+      conversationId: "foreign",
+      message: "No",
+    })).rejects.toThrow("Unknown conversationId");
+
+    await firstParent.sessions.shutdown();
+    const resumedAgain = await secondParent.sessions.resume({
+      agent: "Backend",
+      conversationId: "space-loop",
+      message: "Now continue",
+    });
+    expect(resumedAgain.run.session.sessionId).toBe("space-loop");
+    await secondParent.sessions.close(resumedAgain.run.session.runId);
   });
 
   it("rejects nested launch before creating a controller", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "@ideaspaces/pi-agent-sessions",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Persistent, bounded fellow-agent sessions for Pi",
   "type": "module",
   "license": "MIT",
@@ -48,7 +48,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:real": "vitest run test/real-smoke.test.ts test/real-turn-smoke.test.ts test/real-parent-smoke.test.ts",
+    "test:real": "vitest run test/real-smoke.test.ts test/real-turn-smoke.test.ts test/real-parent-smoke.test.ts test/real-conversation-smoke.test.ts",
     "prepare": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
