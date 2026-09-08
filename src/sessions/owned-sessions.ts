@@ -3,6 +3,7 @@ import { DEFAULT_LIMITS, validateLimits } from "../controller/config.js";
 import type { AgentSessionSnapshot, TurnSnapshot } from "../controller/types.js";
 import { discoverAgentRoster, revalidateAgentTarget } from "../discovery/discovery.js";
 import type { AgentRoster } from "../discovery/types.js";
+import { listAgentConversations } from "../conversations/catalog.js";
 import type {
   AgentReply,
   OwnedAgentSessionsConfig,
@@ -11,6 +12,8 @@ import type {
   OwnedRunSnapshot,
   OwnedSessionsList,
   OwnedSessionsStatus,
+  ListConversationsInput,
+  ListConversationsResult,
   SendSessionInput,
   SessionController,
   SessionOperationResult,
@@ -77,6 +80,22 @@ export class OwnedAgentSessions {
     return { roster, runs };
   }
 
+  async conversations(input: ListConversationsInput): Promise<ListConversationsResult> {
+    this.requireAccepting();
+    validateName(input.agent);
+    const collectionRoot = this.requireCollectionRoot();
+    const roster = await this.refreshRoster();
+    const discovered = roster.agents.find((agent) => agent.name === input.agent);
+    if (!discovered) throw new Error(`Unknown agent: ${input.agent}`);
+    const target = await revalidateAgentTarget(collectionRoot, discovered);
+    return listAgentConversations(target.name, target.path, {
+      query: input.query,
+      limits: this.config.conversations,
+      agentDir: this.config.controller?.agentDir,
+      env: this.config.controller?.env,
+    });
+  }
+
   async start(input: StartSessionInput): Promise<SessionOperationResult> {
     return this.serializeStart(async () => {
       this.requireAccepting();
@@ -85,6 +104,7 @@ export class OwnedAgentSessions {
       }
       validateMessage(input.message);
       validateName(input.agent);
+      validateTopic(input.topic);
       const collectionRoot = this.requireCollectionRoot();
       const roster = await this.refreshRoster();
       const discovered = roster.agents.find((agent) => agent.name === input.agent);
@@ -100,6 +120,7 @@ export class OwnedAgentSessions {
         trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
         model: input.model,
         thinking: input.thinking,
+        sessionName: input.topic?.trim(),
       });
       const runGeneration = this.generation;
       const run: ManagedRun = {
@@ -445,6 +466,14 @@ function validateMessage(message: string): void {
   if (typeof message !== "string" || message.trim() === "" || message.includes("\0")) {
     throw new Error("message must be a non-empty string without NUL bytes");
   }
+}
+
+function validateTopic(topic: string | undefined): void {
+  if (topic === undefined) return;
+  if (typeof topic !== "string" || topic.trim() === "" || topic.includes("\0")) {
+    throw new Error("topic must be non-empty text without NUL bytes");
+  }
+  if (topic.trim().length > 200) throw new Error("topic cannot exceed 200 characters");
 }
 
 function errorMessage(error: unknown): string {

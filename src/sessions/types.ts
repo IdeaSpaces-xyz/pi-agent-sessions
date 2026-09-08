@@ -6,6 +6,7 @@ import type {
   TurnSnapshot,
 } from "../controller/types.js";
 import type { AgentRoster, AgentRosterEntry } from "../discovery/types.js";
+import type { AgentConversationCatalog, ConversationCatalogLimits } from "../conversations/types.js";
 
 export interface SessionController {
   readonly runId: string;
@@ -82,7 +83,8 @@ export interface OwnedAgentSessionsConfig {
     maxAgents?: number;
     maxScannedEntries?: number;
   };
-  controller?: Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking">;
+  conversations?: Partial<ConversationCatalogLimits>;
+  controller?: Omit<AgentSessionControllerConfig, "target" | "trust" | "model" | "thinking" | "sessionName">;
 }
 
 export interface OwnedUiEvent {
@@ -107,9 +109,17 @@ export interface OwnedAgentSessionsDependencies {
 export interface StartSessionInput {
   agent: string;
   message: string;
+  topic?: string;
   model?: string;
   thinking?: AgentSessionControllerConfig["thinking"];
 }
+
+export interface ListConversationsInput {
+  agent: string;
+  query?: string;
+}
+
+export type ListConversationsResult = AgentConversationCatalog;
 
 export interface SendSessionInput {
   runId: string;

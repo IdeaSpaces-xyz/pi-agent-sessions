@@ -62,6 +62,7 @@ describe("PersistentRpcController", () => {
       trust: { mode: "explicit" },
       model: "provider/model",
       thinking: "high",
+      sessionName: "Space Loop",
       env: { FAKE_PI_RECORD: record, FAKE_CUSTOM: "forwarded", PI_SESSION_ID: undefined },
     });
     const invocation = JSON.parse(readFileSync(record, "utf8")) as Record<string, unknown>;
@@ -69,7 +70,7 @@ describe("PersistentRpcController", () => {
       cwd: controller.snapshot().cwd,
       depth: "1",
       custom: "forwarded",
-      argv: ["--mode", "rpc", "--model", "provider/model", "--thinking", "high", "--approve"],
+      argv: ["--mode", "rpc", "--model", "provider/model", "--thinking", "high", "--name", "Space Loop", "--approve"],
     });
     expect(invocation.sessionId).toBeUndefined();
     expect(controller.snapshot()).toMatchObject({

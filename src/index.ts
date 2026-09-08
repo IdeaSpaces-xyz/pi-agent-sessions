@@ -7,6 +7,12 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
 
 export { OwnedAgentSessions } from "./sessions/owned-sessions.js";
 export {
+  DEFAULT_CONVERSATION_LIMITS,
+  listAgentConversations,
+  resolveAgentSessionDir,
+  validateConversationLimits,
+} from "./conversations/catalog.js";
+export {
   discoverAgentRoster,
   revalidateAgentTarget,
   resolveCollectionRoot,
@@ -64,6 +70,12 @@ export type {
   UsageSnapshot,
 } from "./controller/types.js";
 export type {
+  AgentConversation,
+  AgentConversationCatalog,
+  ConversationCatalogLimits,
+  ConversationCatalogOptions,
+} from "./conversations/types.js";
+export type {
   AgentDiscoveryOptions,
   AgentRoster,
   AgentRosterEntry,
@@ -77,6 +89,8 @@ export type {
   OwnedSessionsList,
   OwnedUiEvent,
   OwnedSessionsStatus,
+  ListConversationsInput,
+  ListConversationsResult,
   SendSessionInput,
   SessionController,
   SessionControllerFactory,
