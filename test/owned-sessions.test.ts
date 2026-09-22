@@ -19,9 +19,18 @@ function tempRoot(): string {
   return root;
 }
 
-async function makeAgent(root: string, name: string): Promise<void> {
+async function makeAgent(
+  root: string,
+  name: string,
+  entrypoint: "foundation" | "agreement" | "both" = "foundation",
+): Promise<void> {
   await mkdir(join(root, name, "_agent"), { recursive: true });
-  await writeFile(join(root, name, "_agent", "foundation.md"), `# ${name}\n`);
+  if (entrypoint === "foundation" || entrypoint === "both") {
+    await writeFile(join(root, name, "_agent", "foundation.md"), `# ${name}\n`);
+  }
+  if (entrypoint === "agreement" || entrypoint === "both") {
+    await writeFile(join(root, name, "_agent", "agreement.md"), `# ${name}\n`);
+  }
 }
 
 afterEach(async () => {
@@ -337,6 +346,28 @@ describe("OwnedAgentSessions", () => {
     expect(delivered.map((reply) => reply.reply).sort()).toEqual(["back", "front"]);
     expect(sessions.status().runs.every((run) => run.session.recentEvents.length === 0)).toBe(true);
     expect(sessions.status({ runId: backend.run.session.runId, includeEvents: true }).runs[0].session.recentEvents).toHaveLength(1);
+  });
+
+  it("starts Agreement-only, Foundation-only, and both-entrypoint agents", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend", "agreement");
+    await makeAgent(root, "Frontend", "foundation");
+    await makeAgent(root, "Integrator", "both");
+    const { sessions, controllers, controllerConfigs } = harness(root);
+
+    const backendRun = await sessions.start({ agent: "Backend", message: "start backend" });
+    const frontendRun = await sessions.start({ agent: "Frontend", message: "start frontend" });
+    const integratorRun = await sessions.start({ agent: "Integrator", message: "start integrator" });
+
+    const list = await sessions.list();
+    expect(list.roster?.agents.map((agent) => agent.name)).toEqual(["Backend", "Frontend", "Integrator"]);
+    expect(backendRun.run.agent).toBe("Backend");
+    expect(frontendRun.run.agent).toBe("Frontend");
+    expect(integratorRun.run.agent).toBe("Integrator");
+    expect(controllers).toHaveLength(3);
+    expect(controllerConfigs.map((c) => c.target)).toEqual(
+      list.roster?.agents.map((agent) => agent.path),
+    );
   });
 
   it("invalidates callbacks and closes every child idempotently on parent teardown", async () => {

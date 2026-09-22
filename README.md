@@ -9,7 +9,7 @@ The package exposes exactly one Pi tool, `agent_session`, plus a UI-independent 
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.2.0
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.1
 ```
 
 Configure one absolute collection root when starting Pi:
@@ -18,7 +18,7 @@ Configure one absolute collection root when starting Pi:
 pi --agent-collection /absolute/path/to/agents
 ```
 
-Only immediate child directories containing a regular `_agent/foundation.md` are discoverable. Discovery is non-recursive, bounded, refreshed on `list` and `start`, and revalidated before spawn. Symlinked agents and foundations are omitted.
+Only immediate child directories containing a regular `_agent/agreement.md` or `_agent/foundation.md` are discoverable. Discovery is non-recursive, bounded, refreshed on `list` and `start`, and revalidated before spawn. Symlinked agents and entrypoints are omitted.
 
 Discovery does not approve project resources. By default, a child with project resources starts only when Pi has a positive saved trust decision for that folder. A person can explicitly approve resources for launches from the configured collection:
 

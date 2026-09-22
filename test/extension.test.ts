@@ -19,9 +19,18 @@ function tempRoot(): string {
   return root;
 }
 
-async function makeAgent(root: string, name: string): Promise<void> {
+async function makeAgent(
+  root: string,
+  name: string,
+  entrypoint: "foundation" | "agreement" | "both" = "foundation",
+): Promise<void> {
   await mkdir(join(root, name, "_agent"), { recursive: true });
-  await writeFile(join(root, name, "_agent", "foundation.md"), `# ${name}\n`);
+  if (entrypoint === "foundation" || entrypoint === "both") {
+    await writeFile(join(root, name, "_agent", "foundation.md"), `# ${name}\n`);
+  }
+  if (entrypoint === "agreement" || entrypoint === "both") {
+    await writeFile(join(root, name, "_agent", "agreement.md"), `# ${name}\n`);
+  }
 }
 
 class FakeExtensionApi {
