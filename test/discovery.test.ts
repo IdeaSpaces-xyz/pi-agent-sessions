@@ -17,10 +17,19 @@ function tempRoot(): string {
   return root;
 }
 
-async function makeAgent(root: string, name: string): Promise<string> {
+async function makeAgent(
+  root: string,
+  name: string,
+  entrypoint: "foundation" | "agreement" | "both" = "foundation",
+): Promise<string> {
   const target = join(root, name);
   await mkdir(join(target, "_agent"), { recursive: true });
-  await writeFile(join(target, "_agent", "foundation.md"), `# ${name}\n`);
+  if (entrypoint === "foundation" || entrypoint === "both") {
+    await writeFile(join(target, "_agent", "foundation.md"), `# ${name}\n`);
+  }
+  if (entrypoint === "agreement" || entrypoint === "both") {
+    await writeFile(join(target, "_agent", "agreement.md"), `# ${name}\n`);
+  }
   return target;
 }
 
@@ -29,15 +38,16 @@ afterEach(async () => {
 });
 
 describe("agent roster discovery", () => {
-  it("finds only canonical immediate agent directories in stable name order", async () => {
+  it("finds only canonical immediate agent directories with Agreement or Foundation in stable name order", async () => {
     const root = tempRoot();
-    await makeAgent(root, "Frontend");
-    await makeAgent(root, "Backend");
-    await makeAgent(root, "Integrator");
+    await makeAgent(root, "Frontend", "foundation");
+    await makeAgent(root, "Backend", "agreement");
+    await makeAgent(root, "Integrator", "both");
     await mkdir(join(root, "ordinary-folder"));
-    await makeAgent(join(root, "nested"), "Hidden");
+    await makeAgent(join(root, "nested"), "Hidden", "agreement");
     await mkdir(join(root, "Malformed", "_agent"), { recursive: true });
     await mkdir(join(root, "FoundationIsDirectory", "_agent", "foundation.md"), { recursive: true });
+    await mkdir(join(root, "AgreementIsDirectory", "_agent", "agreement.md"), { recursive: true });
 
     const roster = await discoverAgentRoster(root);
 
@@ -50,16 +60,25 @@ describe("agent roster discovery", () => {
     expect(roster.truncated).toBe(false);
   });
 
-  it("omits symlinked agents and foundations, including escapes", async () => {
+  it("omits symlinked agents and entrypoints, including escapes", async () => {
     if (process.platform === "win32") return;
     const root = tempRoot();
     const outside = tempRoot();
-    const outsideAgent = await makeAgent(outside, "Outside");
+    const outsideAgent = await makeAgent(outside, "Outside", "both");
     await symlink(outsideAgent, join(root, "EscapedAgent"));
 
     const linkedFoundation = join(root, "LinkedFoundation", "_agent");
     await mkdir(linkedFoundation, { recursive: true });
     await symlink(join(outsideAgent, "_agent", "foundation.md"), join(linkedFoundation, "foundation.md"));
+
+    const linkedAgreement = join(root, "LinkedAgreement", "_agent");
+    await mkdir(linkedAgreement, { recursive: true });
+    await symlink(join(outsideAgent, "_agent", "agreement.md"), join(linkedAgreement, "agreement.md"));
+
+    const linkedBoth = join(root, "LinkedBoth", "_agent");
+    await mkdir(linkedBoth, { recursive: true });
+    await symlink(join(outsideAgent, "_agent", "foundation.md"), join(linkedBoth, "foundation.md"));
+    await symlink(join(outsideAgent, "_agent", "agreement.md"), join(linkedBoth, "agreement.md"));
 
     const roster = await discoverAgentRoster(root);
     expect(roster.agents).toEqual([]);
@@ -67,12 +86,34 @@ describe("agent roster discovery", () => {
 
   it("revalidates a discovered target immediately before launch", async () => {
     const root = tempRoot();
-    const target = await makeAgent(root, "Backend");
-    const [entry] = (await discoverAgentRoster(root)).agents;
-    expect(await revalidateAgentTarget(root, entry)).toEqual(entry);
+    const targetFoundation = await makeAgent(root, "Backend", "foundation");
+    const targetAgreement = await makeAgent(root, "Desktop", "agreement");
+    const targetBoth = await makeAgent(root, "Integrator", "both");
 
-    await rm(target, { recursive: true, force: true });
-    await expect(revalidateAgentTarget(root, entry)).rejects.toThrow();
+    const roster = await discoverAgentRoster(root);
+    const backend = roster.agents.find((agent) => agent.name === "Backend")!;
+    const desktop = roster.agents.find((agent) => agent.name === "Desktop")!;
+    const integrator = roster.agents.find((agent) => agent.name === "Integrator")!;
+
+    expect(await revalidateAgentTarget(root, backend)).toEqual(backend);
+    expect(await revalidateAgentTarget(root, desktop)).toEqual(desktop);
+    expect(await revalidateAgentTarget(root, integrator)).toEqual(integrator);
+
+    // Removing entire target directory fails revalidation
+    await rm(targetFoundation, { recursive: true, force: true });
+    await expect(revalidateAgentTarget(root, backend)).rejects.toThrow();
+
+    // Removing the sole entrypoint from an agreement-only agent fails revalidation
+    await rm(join(targetAgreement, "_agent", "agreement.md"), { force: true });
+    await expect(revalidateAgentTarget(root, desktop)).rejects.toThrow();
+
+    // Removing one entrypoint when another valid entrypoint remains still passes revalidation
+    await rm(join(targetBoth, "_agent", "agreement.md"), { force: true });
+    expect(await revalidateAgentTarget(root, integrator)).toEqual(integrator);
+
+    // Removing the remaining entrypoint now fails revalidation
+    await rm(join(targetBoth, "_agent", "foundation.md"), { force: true });
+    await expect(revalidateAgentTarget(root, integrator)).rejects.toThrow();
   });
 
   it("bounds returned agents and scanned collection entries", async () => {

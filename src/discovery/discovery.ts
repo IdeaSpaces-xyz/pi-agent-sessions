@@ -73,6 +73,25 @@ export async function resolveCollectionRoot(collectionRoot: string): Promise<str
   return root;
 }
 
+const ENTRYPOINT_FILENAMES = ["agreement.md", "foundation.md"] as const;
+
+async function hasValidEntrypoint(agentDir: string, target: string): Promise<boolean> {
+  for (const filename of ENTRYPOINT_FILENAMES) {
+    const entrypoint = join(agentDir, filename);
+    try {
+      const stat = await lstat(entrypoint);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      const canonical = await realpath(entrypoint);
+      if (isWithin(target, canonical)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
 async function validateAgentAt(root: string, name: string): Promise<AgentRosterEntry> {
   validateAgentName(name);
   const lexicalTarget = join(root, name);
@@ -92,14 +111,8 @@ async function validateAgentAt(root: string, name: string): Promise<AgentRosterE
     throw new Error(`Agent is missing a local _agent directory: ${name}`);
   }
 
-  const foundation = join(agentDir, "foundation.md");
-  const foundationStat = await lstat(foundation);
-  if (!foundationStat.isFile() || foundationStat.isSymbolicLink()) {
-    throw new Error(`Agent is missing _agent/foundation.md: ${name}`);
-  }
-  const canonicalFoundation = await realpath(foundation);
-  if (!isWithin(target, canonicalFoundation)) {
-    throw new Error(`Agent foundation escapes its folder: ${name}`);
+  if (!(await hasValidEntrypoint(agentDir, target))) {
+    throw new Error(`Agent is missing a valid _agent/agreement.md or _agent/foundation.md: ${name}`);
   }
 
   return { name, path: target };
