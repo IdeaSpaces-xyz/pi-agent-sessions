@@ -72,8 +72,9 @@ export class CliAgentController implements SessionController {
         isScript ? [this.cliPath, "agent", "run", "--help"] : ["agent", "run", "--help"],
         { cwd: this.identity.root, shell: false, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
       const timer = setTimeout(() => signalTree(child, "SIGKILL"), 10_000);
-      child.stdout?.on("data", (chunk: Buffer) => { out = (out + chunk.toString("utf8")).slice(0, 16_000); });
-      child.stderr?.on("data", (chunk: Buffer) => { out = (out + chunk.toString("utf8")).slice(0, 16_000); });
+      child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => { out = (out + chunk).slice(0, 16_000); });
+      child.stderr?.on("data", (chunk: string) => { out = (out + chunk).slice(0, 16_000); });
       child.once("error", () => { clearTimeout(timer); resolve({ out: "", code: 1 }); });
       child.once("close", (code) => { clearTimeout(timer); resolve({ out, code: code ?? 1 }); });
     });
@@ -105,11 +106,12 @@ export class CliAgentController implements SessionController {
       const child = this.spawnImpl(command, argv, { cwd: this.identity.root, shell: false,
         detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...this.config.env } });
       const timer = setTimeout(() => signalTree(child, "SIGKILL"), 15_000);
-      child.stdout?.on("data", (chunk: Buffer) => {
-        out += chunk.toString("utf8");
+      child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        out += chunk;
         if (Buffer.byteLength(out) > 4 * 1024 * 1024) signalTree(child, "SIGKILL");
       });
-      child.stderr?.on("data", (chunk: Buffer) => { err = (err + chunk.toString("utf8")).slice(0, 4000); });
+      child.stderr?.on("data", (chunk: string) => { err = (err + chunk).slice(0, 4000); });
       child.once("error", (e) => { err = e.message; });
       child.once("close", (code) => {
         clearTimeout(timer);
@@ -130,7 +132,7 @@ export class CliAgentController implements SessionController {
 
   async prompt(message: string): Promise<string> {
     if (this.statusValue !== "idle") throw new Error(`Cannot send to a child in ${this.statusValue} state`);
-    if (Buffer.byteLength(message) > 32 * 1024) throw new Error("CLI launch message exceeds 32 KiB; provide a smaller instruction or point to a local Note.");
+    if (Buffer.byteLength(message) > 8 * 1024) throw new Error("CLI launch message exceeds 8 KiB; provide a smaller instruction or point to a local Note.");
     assertTargetUnchanged(this.identity);
     const operationId = `${this.runId}:op-${this.turns.length + 1}`;
     const startedAt = new Date().toISOString();
@@ -213,9 +215,9 @@ export class CliAgentController implements SessionController {
       let complete = false;
       let failure = false;
       let ended = false;
-      let stopReason: "interrupted" | "closed" | "timeout" | undefined;
+      let stopReason: "interrupted" | "closed" | "timeout" | "overflow" | undefined;
       let killTimer: NodeJS.Timeout | undefined;
-      const stop = (reason: "interrupted" | "closed" | "timeout") => {
+      const stop = (reason: "interrupted" | "closed" | "timeout" | "overflow") => {
         if (stopReason) return;
         stopReason = reason;
         signalTree(child, "SIGTERM");
@@ -244,16 +246,17 @@ export class CliAgentController implements SessionController {
         child.once("error", (err) => { error = `Could not start CLI: ${err.message}`; });
       });
       this.active = { stop, done };
-      child.stdout?.on("data", (chunk: Buffer) => {
-        line += chunk.toString("utf8");
-        if (Buffer.byteLength(line) > maxLine && !line.includes("\n")) { error = "CLI event exceeds output limit"; stop("timeout"); return; }
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        line += chunk;
+        if (Buffer.byteLength(line) > maxLine && !line.includes("\n")) { error = "CLI event exceeds output limit"; stop("overflow"); return; }
         let end: number;
         while ((end = line.indexOf("\n")) >= 0) {
           const raw = line.slice(0, end);
           line = line.slice(end + 1);
-          if (Buffer.byteLength(raw) > maxLine) { error = "CLI event exceeds output limit"; stop("timeout"); return; }
+          if (Buffer.byteLength(raw) > maxLine) { error = "CLI event exceeds output limit"; stop("overflow"); return; }
           let event: Record<string, unknown>;
-          try { event = JSON.parse(raw); } catch { error = "Invalid CLI JSON event"; stop("timeout"); return; }
+          try { event = JSON.parse(raw); } catch { error = "Invalid CLI JSON event"; stop("overflow"); return; }
           if (event.type === "text_delta" && typeof event.delta === "string") reply = (reply + event.delta).slice(0, maxReply);
           if (event.type === "turn_complete") {
             complete = true;
@@ -264,7 +267,8 @@ export class CliAgentController implements SessionController {
           if (event.type === "cancelled") { failure = true; error = "Child cancelled"; }
         }
       });
-      child.stderr?.on("data", (chunk: Buffer) => { error = (error + chunk.toString("utf8")).slice(0, maxError); });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => { error = (error + chunk).slice(0, maxError); });
     });
   }
 
