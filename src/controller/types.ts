@@ -157,6 +157,8 @@ export interface AgentSessionSnapshot {
   runtime?: "pi" | "claude";
   model?: string;
   thinking?: string;
+  effort?: string;
+  readOnly?: boolean;
   sessionId?: string;
   sessionFile?: string;
   activeTools: Array<{ toolCallId: string; toolName: string }>;

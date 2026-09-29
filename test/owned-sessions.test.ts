@@ -459,6 +459,15 @@ describe("OwnedAgentSessions", () => {
     const piRun = await sessions.start({ agent: space, runtime: "pi", model: "openai/gpt", thinking: "high", message: "Run Pi through CLI" });
     expect(piRun.operation?.status).toBe("running");
     expect(claudeControllerConfigs[2]).toMatchObject({ runtime: "pi", model: "openai/gpt", thinking: "high", target: realpathSync(space) });
+    await expect(sessions.start({ agent: space, runtime: "claude", message: "do work", permissionMode: "bypassPermissions" }))
+      .rejects.toThrow("requires readOnly:false");
+    await expect(sessions.start({ agent: space, runtime: "pi", message: "hi", readOnly: true }))
+      .rejects.toThrow("not supported by Pi");
+    const writable = await sessions.start({ agent: space, runtime: "claude", message: "do work",
+      model: "opus", effort: "high", readOnly: false, permissionMode: "bypassPermissions" });
+    expect(writable.operation?.status).toBe("running");
+    expect(claudeControllerConfigs[3]).toMatchObject({ runtime: "claude", model: "opus", effort: "high",
+      readOnly: false, permissionMode: "bypassPermissions" });
   });
 
   it("fails before spawn if target does not exist or lacks contract", async () => {

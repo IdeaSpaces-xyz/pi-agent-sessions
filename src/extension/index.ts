@@ -31,6 +31,7 @@ const MAX_WIDGET_RUNS = 4;
 const ActionSchema = StringEnum(["list", "conversations", "start", "resume", "send", "status", "interrupt", "close"] as const);
 const BusyModeSchema = StringEnum(["steer", "followUp"] as const);
 const ThinkingSchema = StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const);
+const EffortSchema = StringEnum(["low", "medium", "high", "xhigh", "max"] as const);
 const RuntimeSchema = StringEnum(["pi", "claude"] as const);
 const PermissionModeSchema = StringEnum(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"] as const);
 
@@ -46,6 +47,8 @@ const AgentSessionParams = Type.Object({
   runtime: Type.Optional(RuntimeSchema),
   model: Type.Optional(Type.String({ description: "Optional child model override for start or resume" })),
   thinking: Type.Optional(ThinkingSchema),
+  effort: Type.Optional(EffortSchema),
+  readOnly: Type.Optional(Type.Boolean({ description: "Claude-only restricted Read/Grep/Glob, no MCP. Defaults true; set false deliberately before requesting writes or permission bypass." })),
   permissionMode: Type.Optional(PermissionModeSchema),
   includeEvents: Type.Optional(Type.Boolean({
     description: "Diagnostic only: include transcript, errors, and aggregated bounded event counts in status",
@@ -64,6 +67,8 @@ export interface AgentSessionToolInput {
   runtime?: "pi" | "claude";
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  readOnly?: boolean;
   permissionMode?: "acceptEdits" | "auto" | "bypassPermissions" | "manual" | "dontAsk" | "plan";
   includeEvents?: boolean;
 }
@@ -194,7 +199,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
       "List configured fellow agents and their bounded conversation metadata. Start a new conversation under Pi or Claude, resume an exact prior conversation, continue a live run, inspect status, interrupt, or close.",
     promptSnippet: "List, start, resume, continue, inspect, interrupt, or close fellow-agent conversations under Pi or Claude",
     promptGuidelines: [
-      "Use agent_session for configured fellow agents or an explicit path to any local IdeaSpace repo with _agent/agreement.md.",
+      "Use agent_session for configured fellow agents or an explicit path to any local IdeaSpace repo with _agent/agreement.md. Claude starts with restricted read-only tools; writing needs readOnly:false, and bypassPermissions must be explicit.",
       "Start and send return after the background turn begins. Tell the person once, then wait for the automatic fellow-agent reply; do not poll or send another message merely to retrieve it.",
       "When an automatic fellow-agent reply arrives, relay its substantive answer to the person; do not merely acknowledge receipt or repeat transport metadata.",
       "Use status when the person asks, when a reply was held by branch movement, or when diagnosing a problem. Set includeEvents only for diagnostics.",
@@ -230,6 +235,8 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             topic: params.topic,
             model: params.model,
             thinking: params.thinking,
+            effort: params.effort,
+            readOnly: params.readOnly,
             permissionMode: params.permissionMode,
           });
           return result(formatOperation("Started", started), { operation: started });
@@ -246,6 +253,8 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             runtime: params.runtime,
             model: params.model,
             thinking: params.thinking,
+            effort: params.effort,
+            readOnly: params.readOnly,
             permissionMode: params.permissionMode,
           });
           return result(formatOperation("Resumed", resumed), { operation: resumed });

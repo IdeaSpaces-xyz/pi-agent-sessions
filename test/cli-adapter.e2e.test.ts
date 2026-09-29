@@ -50,6 +50,7 @@ process.stdin.on('data',data=>{buf+=String(data);while(buf.includes('\\n')){
     const claudeScript = join(bin, "fake-claude.cjs");
     writeFileSync(claudeScript, `
 const fs=require('node:fs'),path=require('node:path');const args=process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_CLAUDE_ARGS,JSON.stringify(args)+'\\n');
 const id=args[args.indexOf('--session-id')+1]||args[args.indexOf('--resume')+1];
 let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
   const out=e=>console.log(JSON.stringify(e));out({type:'system',subtype:'init',session_id:id,model:'fake',cwd:process.cwd()});
@@ -69,12 +70,13 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
     }
     const previous = { PATH: process.env.PATH, IS_CLI_PATH: process.env.IS_CLI_PATH,
       CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, IDEASPACES_PI_EXTENSIONS: process.env.IDEASPACES_PI_EXTENSIONS,
-      FAKE_PI_ARGS: process.env.FAKE_PI_ARGS };
+      FAKE_PI_ARGS: process.env.FAKE_PI_ARGS, FAKE_CLAUDE_ARGS: process.env.FAKE_CLAUDE_ARGS };
     process.env.PATH = `${bin}:${previous.PATH}`;
     process.env.IS_CLI_PATH = cli!;
     process.env.CLAUDE_CONFIG_DIR = join(root, "claude-config");
     process.env.IDEASPACES_PI_EXTENSIONS = join(root, "dummy-extension");
     process.env.FAKE_PI_ARGS = join(root, "pi-argv.jsonl");
+    process.env.FAKE_CLAUDE_ARGS = join(root, "claude-argv.jsonl");
     const replies: AgentReply[] = [];
     const sessions = new OwnedAgentSessions({}, { deliver: (reply) => replies.push(reply) });
     try {
@@ -90,13 +92,26 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       await sessions.close(pi.run.session.runId);
       await sessions.close(piResume.run.session.runId);
 
-      const claude = await sessions.start({ agent: pov, runtime: "claude", model: "sonnet", permissionMode: "manual", message: "hello" });
+      const claude = await sessions.start({ agent: pov, runtime: "claude", model: "sonnet", effort: "high", message: "hello" });
       expect((await settle(sessions, claude.run.session.runId)).reply).toBe("claude:hello");
-      const resumed = await sessions.resume({ agent: pov, runtime: "claude", conversationId: claude.run.session.sessionId!, message: "again" });
+      const resumed = await sessions.resume({ agent: pov, runtime: "claude", conversationId: claude.run.session.sessionId!,
+        effort: "medium", message: "again" });
       expect((await settle(sessions, resumed.run.session.runId)).reply).toBe("claude:again");
+      const claudeArgs = readFileSync(process.env.FAKE_CLAUDE_ARGS, "utf8").trim().split("\n").map((x) => JSON.parse(x) as string[]);
+      expect(claudeArgs[0]).toEqual(expect.arrayContaining(["--model", "sonnet", "--effort", "high",
+        "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--permission-mode", "dontAsk"]));
+      expect(claudeArgs[1]).toEqual(expect.arrayContaining(["--resume", claude.run.session.sessionId!, "--effort", "medium", "--tools"]));
       const failed = await sessions.start({ agent: pov, runtime: "claude", message: "auth_fail" });
       expect((await settle(sessions, failed.run.session.runId)).status).toBe("failed");
       expect(replies.some((r) => r.error?.includes("Login required"))).toBe(true);
+      await expect(sessions.start({ agent: pov, runtime: "claude", message: "do work", permissionMode: "bypassPermissions" }))
+        .rejects.toThrow("requires readOnly:false");
+      const writable = await sessions.start({ agent: pov, runtime: "claude", message: "do work",
+        readOnly: false, permissionMode: "bypassPermissions" });
+      expect((await settle(sessions, writable.run.session.runId)).reply).toBe("claude:do work");
+      const lastArgs = JSON.parse(readFileSync(process.env.FAKE_CLAUDE_ARGS, "utf8").trim().split("\n").at(-1)!) as string[];
+      expect(lastArgs).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions"]));
+      expect(lastArgs).not.toContain("--tools");
     } finally {
       await sessions.shutdown();
       for (const [key, value] of Object.entries(previous)) {

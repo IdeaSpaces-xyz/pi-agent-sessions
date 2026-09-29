@@ -17,7 +17,9 @@ export interface CliControllerConfig {
   runtime: "claude" | "pi";
   model?: string;
   thinking?: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
   permissionMode?: string;
+  readOnly?: boolean;
   trust?: "saved" | "explicit";
   resumeConversationId?: string;
   cliPath?: string;
@@ -44,6 +46,9 @@ export class CliAgentController implements SessionController {
   private active?: { stop: (reason: "interrupted" | "closed" | "timeout") => void; done: Promise<TurnSnapshot> };
 
   constructor(private readonly config: CliControllerConfig) {
+    if (config.runtime === "claude" && config.permissionMode === "bypassPermissions" && config.readOnly !== false) {
+      throw new Error("Claude bypassPermissions requires readOnly:false explicitly.");
+    }
     this.identity = targetIdentity(config.target);
     this.conversationId = config.resumeConversationId ?? randomUUID();
     if (config.runtime === "claude" && !UUID.test(this.conversationId)) {
@@ -58,12 +63,12 @@ export class CliAgentController implements SessionController {
 
   static async start(config: CliControllerConfig): Promise<CliAgentController> {
     const controller = new CliAgentController(config);
-    if (config.runtime === "pi") await controller.verifyCliTrustFlag();
+    await controller.verifyCliCapabilities();
     if (config.resumeConversationId) await controller.verifyExistingConversation();
     return controller;
   }
 
-  private async verifyCliTrustFlag(): Promise<void> {
+  private async verifyCliCapabilities(): Promise<void> {
     assertTargetUnchanged(this.identity);
     const isScript = /[\\/]/.test(this.cliPath) && /\.(?:[cm]?js)$/.test(this.cliPath);
     const result = await new Promise<{ out: string; code: number }>((resolve) => {
@@ -78,8 +83,11 @@ export class CliAgentController implements SessionController {
       child.once("error", () => { clearTimeout(timer); resolve({ out: "", code: 1 }); });
       child.once("close", (code) => { clearTimeout(timer); resolve({ out, code: code ?? 1 }); });
     });
-    if (result.code !== 0 || !result.out.includes("--pi-trust")) {
-      throw new Error("CLI does not support --pi-trust; update the IdeaSpaces CLI before launching Pi from an explicit POV.");
+    const required = this.config.runtime === "pi" ? ["--pi-trust"] :
+      ["--read-only", ...(this.config.effort ? ["--claude-effort"] : [])];
+    const missing = required.find((flag) => !result.out.includes(flag));
+    if (result.code !== 0 || missing) {
+      throw new Error(`CLI does not support ${missing ?? required[0]}; update the IdeaSpaces CLI before launching this POV.`);
     }
   }
 
@@ -87,7 +95,9 @@ export class CliAgentController implements SessionController {
     return {
       runId: this.runId, pid: this.child?.pid, cwd: this.identity.root,
       status: this.statusValue, runtime: this.config.runtime, model: this.config.model,
-      thinking: this.config.thinking, sessionId: this.conversationId,
+      thinking: this.config.thinking, effort: this.config.effort,
+      readOnly: this.config.runtime === "claude" ? this.config.readOnly !== false : undefined,
+      sessionId: this.conversationId,
       activeTools: [], outstandingRequestIds: [], outstandingDialogs: [], recentEvents: [],
       turns: this.turns.map((turn) => ({ ...turn })), stderr: "",
     };
@@ -186,7 +196,11 @@ export class CliAgentController implements SessionController {
     if (this.config.model) args.push("--model", this.config.model);
     if (this.config.thinking) args.push("--pi-thinking", this.config.thinking);
     if (this.config.runtime === "pi") args.push("--pi-trust", this.config.trust ?? "saved");
-    if (this.config.permissionMode) args.push("--permission-mode", this.config.permissionMode);
+    if (this.config.runtime === "claude") {
+      if (this.config.effort) args.push("--claude-effort", this.config.effort);
+      args.push("--permission-mode", this.config.permissionMode ?? (this.config.readOnly === false ? "acceptEdits" : "dontAsk"));
+      if (this.config.readOnly !== false) args.push("--read-only");
+    }
     const isScript = /[\\/]/.test(this.cliPath) && /\.(?:[cm]?js)$/.test(this.cliPath);
     const command = isScript ? process.execPath : this.cliPath;
     const argv = isScript ? [this.cliPath, ...args] : args;
