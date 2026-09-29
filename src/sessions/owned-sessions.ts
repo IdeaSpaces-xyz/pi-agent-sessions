@@ -113,7 +113,7 @@ export class OwnedAgentSessions {
       if (liveCount >= maxChildren) throw new Error(`Owned live session limit reached (${maxChildren})`);
 
       const runtime = input.runtime ?? "pi";
-      validateRuntimeOptions(runtime, input.thinking, input.permissionMode);
+      validateRuntimeOptions(runtime, input.thinking, input.effort, input.readOnly, input.permissionMode);
       const useCli = runtime === "claude" || isExplicitTarget(input.agent, this.config.collectionRoot);
       if (useCli && input.topic) throw new Error("CLI launches name the conversation from its first message; topic is available only to resident Pi runs.");
       let controller: SessionController;
@@ -123,6 +123,8 @@ export class OwnedAgentSessions {
           runtime,
           model: input.model,
           thinking: input.thinking,
+          effort: input.effort,
+          readOnly: input.readOnly,
           permissionMode: input.permissionMode,
           trust: this.config.approveProjectResources ? "explicit" : "saved",
           limits: this.config.controller?.limits,
@@ -158,7 +160,7 @@ export class OwnedAgentSessions {
 
       const isClaudeId = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(input.conversationId);
       const runtime = input.runtime ?? (isClaudeId ? "claude" : "pi");
-      validateRuntimeOptions(runtime, input.thinking, input.permissionMode);
+      validateRuntimeOptions(runtime, input.thinking, input.effort, input.readOnly, input.permissionMode);
       const useCli = runtime === "claude" || isExplicitTarget(input.agent, this.config.collectionRoot);
 
       let controller: SessionController | undefined;
@@ -170,6 +172,8 @@ export class OwnedAgentSessions {
           runtime,
           model: input.model,
           thinking: input.thinking,
+          effort: input.effort,
+          readOnly: input.readOnly,
           permissionMode: input.permissionMode,
           trust: this.config.approveProjectResources ? "explicit" : "saved",
           resumeConversationId: input.conversationId,
@@ -569,9 +573,14 @@ function isExplicitTarget(agent: string, collectionRoot?: string): boolean {
   return !collectionRoot || agent === "." || agent.includes("/") || agent.includes("\\");
 }
 
-function validateRuntimeOptions(runtime: "pi" | "claude", thinking?: string, permissionMode?: string): void {
-  if (runtime === "claude" && thinking) throw new Error("Pi thinking levels are not supported by Claude; omit thinking.");
-  if (runtime === "pi" && permissionMode) throw new Error("Claude permission mode is not supported by Pi; omit permissionMode.");
+function validateRuntimeOptions(runtime: "pi" | "claude", thinking?: string, effort?: string, readOnly?: boolean, permissionMode?: string): void {
+  if (runtime === "claude" && thinking) throw new Error("Pi thinking levels are not supported by Claude; use effort instead.");
+  if (runtime === "pi" && (permissionMode !== undefined || effort !== undefined || readOnly !== undefined)) {
+    throw new Error("Claude permission, effort and read-only options are not supported by Pi.");
+  }
+  if (runtime === "claude" && permissionMode === "bypassPermissions" && readOnly !== false) {
+    throw new Error("Claude bypassPermissions requires readOnly:false explicitly.");
+  }
 }
 
 function validateTarget(value: string, field = "agent"): void {

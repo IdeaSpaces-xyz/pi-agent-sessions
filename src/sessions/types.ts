@@ -116,6 +116,8 @@ export interface StartSessionInput {
   topic?: string;
   model?: string;
   thinking?: AgentSessionControllerConfig["thinking"];
+  effort?: CliControllerConfig["effort"];
+  readOnly?: boolean;
   permissionMode?: string;
 }
 
@@ -131,6 +133,8 @@ export interface ResumeSessionInput {
   runtime?: "pi" | "claude";
   model?: string;
   thinking?: AgentSessionControllerConfig["thinking"];
+  effort?: CliControllerConfig["effort"];
+  readOnly?: boolean;
   permissionMode?: string;
 }
 
