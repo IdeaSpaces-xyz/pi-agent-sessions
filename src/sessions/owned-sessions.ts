@@ -1,8 +1,9 @@
 import { PersistentRpcController } from "../controller/controller.js";
+import { CliAgentController } from "../controller/cli-controller.js";
 import { DEFAULT_LIMITS, validateLimits } from "../controller/config.js";
 import type { AgentSessionSnapshot, TurnSnapshot } from "../controller/types.js";
-import { discoverAgentRoster, revalidateAgentTarget } from "../discovery/discovery.js";
-import type { AgentRoster } from "../discovery/types.js";
+import { discoverAgentRoster, resolveAgentTarget, revalidateAgentTarget } from "../discovery/discovery.js";
+import type { AgentRoster, AgentRosterEntry } from "../discovery/types.js";
 import { listAgentConversations, resolveAgentConversation } from "../conversations/catalog.js";
 import { acquireConversationLease } from "../conversations/lease.js";
 import type {
@@ -43,6 +44,7 @@ interface ManagedRun {
 
 export class OwnedAgentSessions {
   private readonly createController: NonNullable<OwnedAgentSessionsDependencies["createController"]>;
+  private readonly createClaudeController: NonNullable<OwnedAgentSessionsDependencies["createClaudeController"]>;
   private readonly now: () => Date;
   private readonly runs = new Map<string, ManagedRun>();
   private branchEpoch = 0;
@@ -57,6 +59,7 @@ export class OwnedAgentSessions {
     dependencies: OwnedAgentSessionsDependencies = {},
   ) {
     this.createController = dependencies.createController ?? ((input) => PersistentRpcController.start(input));
+    this.createClaudeController = dependencies.createClaudeController ?? ((input) => CliAgentController.start(input));
     this.now = dependencies.now ?? (() => new Date());
     validateDepth(config.depth);
   }
@@ -76,7 +79,7 @@ export class OwnedAgentSessions {
       return {
         runs,
         configurationError:
-          "No agent collection is configured. Set PI_AGENT_SESSIONS_CONFIG or pass --agent-collection <absolute-path>.",
+          "No agent collection is configured. Pass an explicit repository path with _agent/agreement.md to start a fellow session.",
       };
     }
     const roster = await this.refreshRoster();
@@ -85,12 +88,8 @@ export class OwnedAgentSessions {
 
   async conversations(input: ListConversationsInput): Promise<ListConversationsResult> {
     this.requireAccepting();
-    validateName(input.agent);
-    const collectionRoot = this.requireCollectionRoot();
-    const roster = await this.refreshRoster();
-    const discovered = roster.agents.find((agent) => agent.name === input.agent);
-    if (!discovered) throw new Error(`Unknown agent: ${input.agent}`);
-    const target = await revalidateAgentTarget(collectionRoot, discovered);
+    validateTarget(input.agent);
+    const target = await this.resolveTarget(input.agent);
     return listAgentConversations(target.name, target.path, {
       query: input.query,
       limits: this.config.conversations,
@@ -106,25 +105,39 @@ export class OwnedAgentSessions {
         throw new Error("Nested agent sessions are disabled in this release");
       }
       validateMessage(input.message);
-      validateName(input.agent);
+      validateTarget(input.agent);
       validateTopic(input.topic);
-      const collectionRoot = this.requireCollectionRoot();
-      const roster = await this.refreshRoster();
-      const discovered = roster.agents.find((agent) => agent.name === input.agent);
-      if (!discovered) throw new Error(`Unknown agent: ${input.agent}`);
-      const target = await revalidateAgentTarget(collectionRoot, discovered);
+      const target = await this.resolveTarget(input.agent);
       const liveCount = [...this.runs.values()].filter((run) => isLive(run.controller.snapshot())).length;
       const maxChildren = validateLimits(this.config.controller?.limits).maxChildren;
       if (liveCount >= maxChildren) throw new Error(`Owned live session limit reached (${maxChildren})`);
 
-      const controller = await this.createController({
-        ...this.config.controller,
-        target: target.path,
-        trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
-        model: input.model,
-        thinking: input.thinking,
-        sessionName: input.topic?.trim(),
-      });
+      const runtime = input.runtime ?? "pi";
+      validateRuntimeOptions(runtime, input.thinking, input.permissionMode);
+      const useCli = runtime === "claude" || isExplicitTarget(input.agent, this.config.collectionRoot);
+      if (useCli && input.topic) throw new Error("CLI launches name the conversation from its first message; topic is available only to resident Pi runs.");
+      let controller: SessionController;
+      if (useCli) {
+        controller = await this.createClaudeController({
+          target: target.path,
+          runtime,
+          model: input.model,
+          thinking: input.thinking,
+          permissionMode: input.permissionMode,
+          trust: this.config.approveProjectResources ? "explicit" : "saved",
+          limits: this.config.controller?.limits,
+          env: this.config.controller?.env,
+        });
+      } else {
+        controller = await this.createController({
+          ...this.config.controller,
+          target: target.path,
+          trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
+          model: input.model,
+          thinking: input.thinking,
+          sessionName: input.topic?.trim(),
+        });
+      }
       const run = this.registerRun(target.name, controller);
       const operation = await this.beginPrompt(run, input.message);
       this.hooks.stateChanged?.();
@@ -137,48 +150,67 @@ export class OwnedAgentSessions {
       this.requireAccepting();
       if ((this.config.depth ?? 0) > 0) throw new Error("Nested agent sessions are disabled in this release");
       validateMessage(input.message);
-      validateName(input.agent);
-      const collectionRoot = this.requireCollectionRoot();
-      const roster = await this.refreshRoster();
-      const discovered = roster.agents.find((agent) => agent.name === input.agent);
-      if (!discovered) throw new Error(`Unknown agent: ${input.agent}`);
-      const target = await revalidateAgentTarget(collectionRoot, discovered);
+      validateTarget(input.agent);
+      const target = await this.resolveTarget(input.agent);
       const liveCount = [...this.runs.values()].filter((run) => isLive(run.controller.snapshot())).length;
       const maxChildren = validateLimits(this.config.controller?.limits).maxChildren;
       if (liveCount >= maxChildren) throw new Error(`Owned live session limit reached (${maxChildren})`);
 
-      const options = {
-        limits: this.config.conversations,
-        agentDir: this.config.controller?.agentDir,
-        env: this.config.controller?.env,
-      };
-      const selected = resolveAgentConversation(target.path, input.conversationId, options);
-      const lease = acquireConversationLease(
-        selected.path,
-        this.config.controller?.agentDir,
-        this.config.controller?.env,
-      );
+      const isClaudeId = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(input.conversationId);
+      const runtime = input.runtime ?? (isClaudeId ? "claude" : "pi");
+      validateRuntimeOptions(runtime, input.thinking, input.permissionMode);
+      const useCli = runtime === "claude" || isExplicitTarget(input.agent, this.config.collectionRoot);
+
       let controller: SessionController | undefined;
-      try {
-        const revalidated = resolveAgentConversation(target.path, input.conversationId, options);
-        if (revalidated.path !== selected.path) throw new Error("Conversation path changed before resume");
-        controller = await this.createController({
-          ...this.config.controller,
+      let releaseLease: (() => void) | undefined;
+
+      if (useCli) {
+        controller = await this.createClaudeController({
           target: target.path,
-          trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
+          runtime,
           model: input.model,
           thinking: input.thinking,
-          resumeSession: { path: revalidated.path, conversationId: input.conversationId },
+          permissionMode: input.permissionMode,
+          trust: this.config.approveProjectResources ? "explicit" : "saved",
+          resumeConversationId: input.conversationId,
+          limits: this.config.controller?.limits,
+          env: this.config.controller?.env,
         });
-        const childPid = controller.snapshot().pid;
-        if (!childPid) throw new Error("Resumed controller did not expose its process id");
-        lease.setOwnerPid(childPid);
-      } catch (error) {
-        await controller?.close().catch(() => undefined);
-        lease.release();
-        throw error;
+      } else {
+        const options = {
+          limits: this.config.conversations,
+          agentDir: this.config.controller?.agentDir,
+          env: this.config.controller?.env,
+        };
+        const selected = resolveAgentConversation(target.path, input.conversationId, options);
+        const lease = acquireConversationLease(
+          selected.path,
+          this.config.controller?.agentDir,
+          this.config.controller?.env,
+        );
+        releaseLease = lease.release;
+        try {
+          const revalidated = resolveAgentConversation(target.path, input.conversationId, options);
+          if (revalidated.path !== selected.path) throw new Error("Conversation path changed before resume");
+          controller = await this.createController({
+            ...this.config.controller,
+            target: target.path,
+            trust: this.config.approveProjectResources ? { mode: "explicit" } : { mode: "saved" },
+            model: input.model,
+            thinking: input.thinking,
+            resumeSession: { path: revalidated.path, conversationId: input.conversationId },
+          });
+          const childPid = controller.snapshot().pid;
+          if (!childPid) throw new Error("Resumed controller did not expose its process id");
+          lease.setOwnerPid(childPid);
+        } catch (error) {
+          await controller?.close().catch(() => undefined);
+          lease.release();
+          throw error;
+        }
       }
-      const run = this.registerRun(target.name, controller, lease.release);
+
+      const run = this.registerRun(target.name, controller, releaseLease);
       try {
         const operation = await this.beginPrompt(run, input.message);
         this.hooks.stateChanged?.();
@@ -460,6 +492,10 @@ export class OwnedAgentSessions {
     });
   }
 
+  private async resolveTarget(agentOrPath: string): Promise<AgentRosterEntry> {
+    return resolveAgentTarget(this.config.collectionRoot, agentOrPath);
+  }
+
   private requireRun(runId: string): ManagedRun {
     if (typeof runId !== "string" || runId.trim() === "" || runId.includes("\0")) {
       throw new Error("runId must be a non-empty string without NUL bytes");
@@ -526,6 +562,21 @@ function isLive(snapshot: AgentSessionSnapshot): boolean {
 function validateDepth(depth: number | undefined): void {
   if (depth !== undefined && (!Number.isSafeInteger(depth) || depth < 0 || depth > 32)) {
     throw new Error("depth must be an integer between 0 and 32");
+  }
+}
+
+function isExplicitTarget(agent: string, collectionRoot?: string): boolean {
+  return !collectionRoot || agent === "." || agent.includes("/") || agent.includes("\\");
+}
+
+function validateRuntimeOptions(runtime: "pi" | "claude", thinking?: string, permissionMode?: string): void {
+  if (runtime === "claude" && thinking) throw new Error("Pi thinking levels are not supported by Claude; omit thinking.");
+  if (runtime === "pi" && permissionMode) throw new Error("Claude permission mode is not supported by Pi; omit permissionMode.");
+}
+
+function validateTarget(value: string, field = "agent"): void {
+  if (typeof value !== "string" || value.trim() === "" || value.includes("\0")) {
+    throw new Error(`${field} must be a non-empty name or path without NUL bytes`);
   }
 }
 

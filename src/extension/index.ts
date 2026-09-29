@@ -31,18 +31,22 @@ const MAX_WIDGET_RUNS = 4;
 const ActionSchema = StringEnum(["list", "conversations", "start", "resume", "send", "status", "interrupt", "close"] as const);
 const BusyModeSchema = StringEnum(["steer", "followUp"] as const);
 const ThinkingSchema = StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const);
+const RuntimeSchema = StringEnum(["pi", "claude"] as const);
+const PermissionModeSchema = StringEnum(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"] as const);
 
 const AgentSessionParams = Type.Object({
   action: ActionSchema,
-  agent: Type.Optional(Type.String({ description: "Discovered agent name; required for conversations and start" })),
+  agent: Type.Optional(Type.String({ description: "Discovered agent name or local repository path; required for conversations and start" })),
   runId: Type.Optional(Type.String({ description: "Owned run id; required for send, interrupt, and close" })),
   message: Type.Optional(Type.String({ description: "Message for start or send" })),
   query: Type.Optional(Type.String({ description: "Optional bounded name/first-message query for conversations" })),
   topic: Type.Optional(Type.String({ description: "Optional durable Pi session name for start" })),
   conversationId: Type.Optional(Type.String({ description: "Exact catalog conversation id; required for resume" })),
   busyMode: Type.Optional(BusyModeSchema),
-  model: Type.Optional(Type.String({ description: "Optional child model override for start" })),
+  runtime: Type.Optional(RuntimeSchema),
+  model: Type.Optional(Type.String({ description: "Optional child model override for start or resume" })),
   thinking: Type.Optional(ThinkingSchema),
+  permissionMode: Type.Optional(PermissionModeSchema),
   includeEvents: Type.Optional(Type.Boolean({
     description: "Diagnostic only: include transcript, errors, and aggregated bounded event counts in status",
   })),
@@ -57,8 +61,10 @@ export interface AgentSessionToolInput {
   topic?: string;
   conversationId?: string;
   busyMode?: "steer" | "followUp";
+  runtime?: "pi" | "claude";
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  permissionMode?: "acceptEdits" | "auto" | "bypassPermissions" | "manual" | "dontAsk" | "plan";
   includeEvents?: boolean;
 }
 
@@ -185,10 +191,10 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
     name: "agent_session",
     label: "Agent Session",
     description:
-      "List configured fellow agents and their bounded conversation metadata. Start a new conversation, resume an exact prior conversation in a new owned process, continue a live run, inspect status, interrupt, or close.",
-    promptSnippet: "List, start, resume, continue, inspect, interrupt, or close fellow-agent conversations",
+      "List configured fellow agents and their bounded conversation metadata. Start a new conversation under Pi or Claude, resume an exact prior conversation, continue a live run, inspect status, interrupt, or close.",
+    promptSnippet: "List, start, resume, continue, inspect, interrupt, or close fellow-agent conversations under Pi or Claude",
     promptGuidelines: [
-      "Use agent_session only for configured fellow agents; conversations, start, and resume accept an agent name, never an arbitrary folder or session path.",
+      "Use agent_session for configured fellow agents or an explicit path to any local IdeaSpace repo with _agent/agreement.md.",
       "Start and send return after the background turn begins. Tell the person once, then wait for the automatic fellow-agent reply; do not poll or send another message merely to retrieve it.",
       "When an automatic fellow-agent reply arrives, relay its substantive answer to the person; do not merely acknowledge receipt or repeat transport metadata.",
       "Use status when the person asks, when a reply was held by branch movement, or when diagnosing a problem. Set includeEvents only for diagnostics.",
@@ -220,9 +226,11 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
           const started = await sessions.start({
             agent,
             message,
+            runtime: params.runtime,
             topic: params.topic,
             model: params.model,
             thinking: params.thinking,
+            permissionMode: params.permissionMode,
           });
           return result(formatOperation("Started", started), { operation: started });
         }
@@ -235,8 +243,10 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             agent,
             conversationId,
             message,
+            runtime: params.runtime,
             model: params.model,
             thinking: params.thinking,
+            permissionMode: params.permissionMode,
           });
           return result(formatOperation("Resumed", resumed), { operation: resumed });
         }

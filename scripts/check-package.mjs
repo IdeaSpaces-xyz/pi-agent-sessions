@@ -41,6 +41,10 @@ try {
     PI_OFFLINE: "1",
     AGENT_TOOL_AUDIT: auditOutput,
   };
+  // This check creates a fresh parent, not a nested fellow session. The caller
+  // may itself be a fellow (PI_AGENT_SESSION_DEPTH=1), whose extension correctly
+  // disables agent_session; inheriting that marker makes this check lie.
+  delete env.PI_AGENT_SESSION_DEPTH;
 
   run(process.execPath, [piCli, "install", packageDirectory], project, env);
   const rpc = run(

@@ -1,18 +1,18 @@
 # pi-agent-sessions
 
-Persistent, bounded Pi sessions for consulting another agent in its own folder.
-
-The package exposes exactly one Pi tool, `agent_session`, plus a UI-independent controller for other hosts. Each child is an ordinary persistent Pi RPC process with its own working directory, orientation, transcript, and session state. Parent prompts, transcripts, maps, mounts, and session identity are not copied into it.
+Bounded fellow sessions from Pi. `agent_session` launches a selected local Agreement POV under Pi or Claude via the IdeaSpaces CLI; configured collection names retain the existing resident Pi RPC controller. A CLI turn resumes by conversation id in a fresh process, not by attaching to the old process. Parent transcripts and mounts are never copied into the child.
 
 ## Install
 
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.2.1
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.2
 ```
 
-Configure one absolute collection root when starting Pi:
+For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.1.52` separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. An older CLI is refused for explicit Pi launches because it cannot enforce saved project-resource trust. Pi launches need `IDEASPACES_PI_EXTENSIONS` (or the CLI's `--ext`) as before; Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
+
+Optionally configure an absolute collection root for the legacy named roster and resident Pi controls:
 
 ```bash
 pi --agent-collection /absolute/path/to/agents
@@ -44,16 +44,16 @@ Ask Pi to list or consult a fellow agent. The model uses one tool with eight act
 |---|---|
 | `list` | Refresh the bounded roster and show owned runs. |
 | `conversations` | List or query bounded prior Pi conversation metadata for one discovered agent. |
-| `start` | Start a discovered agent with a required first message and optional durable topic name. |
-| `resume` | Continue an exact catalog conversation in a new owned RPC process. |
-| `send` | Continue an idle run, or explicitly `steer`/`followUp` a busy run. |
+| `start` | Start a named collection agent or explicit Agreement path; select `runtime: pi|claude`, model, and Pi thinking. |
+| `resume` | Continue an exact conversation id in a fresh controller (Claude requires a UUID). |
+| `send` | Continue an idle run; resident Pi runs can also `steer`/`followUp` while busy. |
 | `status` | Inspect bounded state and retrieve replies held by branch movement. |
 | `interrupt` | Stop the current turn while keeping the child session alive. |
 | `close` | Idempotently close the owned process tree. |
 
-An agent name addresses a canonical folder and point of view. A `conversationId` addresses durable Pi session history under that agent's session coordinate. A `runId` controls only the transient RPC process currently hosting it. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
+A collection agent name addresses a canonical folder; an explicit path addresses **any** local IdeaSpace repo with its own regular Agreement. Neither a collection nor an agent kind is required for the path. An explicit Pi path and all Claude runs use CLI `agent run`; named collection Pi runs retain the resident RPC controller. The Pi controller supports queued busy turns and a durable topic; CLI turns do not. `conversationId` addresses the selected runtime's persisted transcript, while `runId` addresses only this parent's controller. On CLI resume, the conversation must exist at the same POV; an unknown id fails rather than creating a new transcript. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
 
-`resume` accepts the exact agent plus `conversationId` returned by `conversations`, never a path or prefix. It revalidates the target and session, then takes an exclusive package lease before opening `pi --session`. Another package parent cannot write that conversation concurrently; uncertain ownership fails closed. Resume starts a new process and reapplies current target startup and trust—it does not reconnect to an old PID or preserve a process across parent teardown.
+Resident Pi `resume` accepts the exact catalog conversation id and takes an exclusive package lease before opening `pi --session`. CLI-backed turns revalidate the selected Agreement before every spawn, use saved Pi project-resource trust unless explicitly approved, and bound output, failure, and process teardown. Their `resume` requires an existing conversation at that POV; it does **not** lease a live CLI session or keep it running after parent exit. Live detachment is a separate follow-on.
 
 A terminal widget shows live child state, active tools, waiting dialogs, and unread replies. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
 
@@ -61,7 +61,7 @@ Normal tool results keep only the agent, clearly labelled `runId`, process state
 
 Child `select`, `confirm`, `input`, and `editor` requests are labelled and serialized through one parent FIFO. Responses remain correlated to the requesting child. Missing UI, request timeout, interruption, close, or parent teardown cancels the exact request; absence is never converted into approval. Child notifications, statuses, and string widgets are projected with run-scoped keys. Requests to replace the parent title or editor text are reported as unsupported.
 
-Starting a new session, resuming, forking, reloading, or quitting invalidates delivery and closes all children. Transcript pointers remain in parent session metadata, but a later extension instance does not reattach to old processes. No action accepts an arbitrary working directory or process id, and children cannot launch nested sessions in this release.
+Starting a new session, resuming, forking, reloading, or quitting invalidates delivery and closes all children. Transcript pointers remain in parent session metadata, but a later extension instance does not reattach to old processes. No action accepts an arbitrary process id; explicit local POV paths are validated and child sessions cannot nest in this release. `--agent-approve-project-resources` is an explicit Pi trust override, not a Claude permission bypass; Claude permission mode must be chosen separately (`bypassPermissions` only when explicitly requested).
 
 ## Host configuration
 

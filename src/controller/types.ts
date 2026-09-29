@@ -154,6 +154,9 @@ export interface AgentSessionSnapshot {
   pid?: number;
   cwd: string;
   status: ProcessStatus;
+  runtime?: "pi" | "claude";
+  model?: string;
+  thinking?: string;
   sessionId?: string;
   sessionFile?: string;
   activeTools: Array<{ toolCallId: string; toolName: string }>;
