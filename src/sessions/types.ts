@@ -101,17 +101,22 @@ export interface OwnedAgentSessionsHooks {
   stateChanged?(): void;
 }
 
+import type { CliControllerConfig } from "../controller/cli-controller.js";
+
 export interface OwnedAgentSessionsDependencies {
   createController?: SessionControllerFactory;
+  createClaudeController?: (config: CliControllerConfig) => Promise<SessionController>;
   now?: () => Date;
 }
 
 export interface StartSessionInput {
   agent: string;
   message: string;
+  runtime?: "pi" | "claude";
   topic?: string;
   model?: string;
   thinking?: AgentSessionControllerConfig["thinking"];
+  permissionMode?: string;
 }
 
 export interface ListConversationsInput {
@@ -123,8 +128,10 @@ export interface ResumeSessionInput {
   agent: string;
   conversationId: string;
   message: string;
+  runtime?: "pi" | "claude";
   model?: string;
   thinking?: AgentSessionControllerConfig["thinking"];
+  permissionMode?: string;
 }
 
 export type ListConversationsResult = AgentConversationCatalog;

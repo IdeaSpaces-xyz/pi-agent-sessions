@@ -177,7 +177,7 @@ describe("OwnedAgentSessions", () => {
 
     const list = await sessions.list();
     expect(list.roster?.agents.map((agent) => agent.name)).toEqual(["Backend", "Frontend"]);
-    await expect(sessions.start({ agent: "../outside", message: "hello" })).rejects.toThrow("immediate-child");
+    await expect(sessions.start({ agent: "../outside", message: "hello" })).rejects.toThrow();
 
     const started = await sessions.start({ agent: "Backend", message: "Review this" });
     expect(started.run).toMatchObject({ agent: "Backend", session: { status: "running" } });
@@ -387,6 +387,86 @@ describe("OwnedAgentSessions", () => {
     expect(delivered).toEqual([]);
     expect(pointers.filter((pointer) => pointer.event === "closed")).toHaveLength(2);
     await expect(sessions.start({ agent: "Backend", message: "again" })).rejects.toThrow("shutting down");
+  });
+
+  it("starts an explicit local Agreement repo outside the agent collection under Pi and Claude runtimes", async () => {
+    const space = tempRoot();
+    await mkdir(join(space, "_agent"), { recursive: true });
+    await writeFile(join(space, "_agent", "agreement.md"), "# External Space Agreement\n");
+
+    const claudeControllerConfigs: any[] = [];
+    const claudeControllers: FakeController[] = [];
+
+    const delivered: AgentReply[] = [];
+    const sessions = new OwnedAgentSessions(
+      {}, // no collectionRoot configured!
+      {
+        deliver(reply) {
+          delivered.push(reply);
+        },
+      },
+      {
+        createController: async (config) => {
+          const controller = new FakeController(config.target);
+          return controller;
+        },
+        createClaudeController: async (config) => {
+          claudeControllerConfigs.push(config);
+          const controller = new FakeController(config.target, config.resumeConversationId);
+          claudeControllers.push(controller);
+          return controller;
+        },
+      },
+    );
+
+    // List without collection configured does not throw and reports 0 runs
+    const list = await sessions.list();
+    expect(list.runs).toEqual([]);
+    expect(list.configurationError).toContain("Pass an explicit repository path");
+
+    // Launch under Claude with model override
+    const claudeRun = await sessions.start({
+      agent: space,
+      runtime: "claude",
+      model: "claude-3-7-sonnet",
+      message: "Check external space under Claude",
+    });
+
+    expect(claudeRun.run.agent).toBe(space.split("/").pop());
+    expect(claudeControllerConfigs[0].runtime).toBe("claude");
+    expect(claudeControllerConfigs[0].model).toBe("claude-3-7-sonnet");
+    expect(claudeControllerConfigs[0].target).toBe(realpathSync(space));
+
+    // Settle first turn
+    claudeControllers[0].settle(claudeRun.operation!.operationId, "completed", "Done with first turn");
+
+    // Send follow-up to claude run
+    const sendRes = await sessions.send({
+      runId: claudeRun.run.session.runId,
+      message: "Follow-up turn",
+    });
+    expect(sendRes.operation?.status).toBe("running");
+
+    // Resume under Claude with conversationId
+    const resumed = await sessions.resume({
+      agent: space,
+      runtime: "claude",
+      conversationId: "cld-conv-1234",
+      message: "Resume turn",
+    });
+    expect(claudeControllerConfigs[1].resumeConversationId).toBe("cld-conv-1234");
+
+    const piRun = await sessions.start({ agent: space, runtime: "pi", model: "openai/gpt", thinking: "high", message: "Run Pi through CLI" });
+    expect(piRun.operation?.status).toBe("running");
+    expect(claudeControllerConfigs[2]).toMatchObject({ runtime: "pi", model: "openai/gpt", thinking: "high", target: realpathSync(space) });
+  });
+
+  it("fails before spawn if target does not exist or lacks contract", async () => {
+    const { sessions } = harness(tempRoot());
+    await expect(sessions.start({ agent: "/nonexistent/path/to/repo", message: "hi" })).rejects.toThrow("does not exist");
+
+    const emptyDir = tempRoot();
+    await expect(sessions.start({ agent: emptyDir, message: "hi" })).rejects.toThrow("_agent");
   });
 });
 

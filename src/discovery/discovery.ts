@@ -59,6 +59,92 @@ export async function revalidateAgentTarget(
   return current;
 }
 
+export async function validateExplicitAgentTarget(
+  targetPath: string,
+  options: { cwd?: string } = {},
+): Promise<AgentRosterEntry> {
+  validatePath(targetPath, "targetPath");
+  const cwd = options.cwd ?? process.cwd();
+  const lexicalTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+
+  let targetStat;
+  try {
+    targetStat = await lstat(lexicalTarget);
+  } catch {
+    throw new Error(`Agent target does not exist: ${targetPath}`);
+  }
+
+  if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+    throw new Error(`Agent target is not a directory: ${targetPath}`);
+  }
+
+  let canonicalTarget: string;
+  try {
+    canonicalTarget = await realpath(lexicalTarget);
+  } catch {
+    throw new Error(`Agent target is inaccessible: ${targetPath}`);
+  }
+
+  const agentDir = join(canonicalTarget, "_agent");
+  let agentDirStat;
+  try {
+    agentDirStat = await lstat(agentDir);
+  } catch {
+    throw new Error(`Agent target is missing a local _agent directory: ${targetPath}`);
+  }
+
+  if (!agentDirStat.isDirectory() || agentDirStat.isSymbolicLink()) {
+    throw new Error(`Agent target is missing a local _agent directory: ${targetPath}`);
+  }
+
+  const agreement = join(agentDir, "agreement.md");
+  try {
+    const file = await lstat(agreement);
+    if (!file.isFile() || file.isSymbolicLink() || !isWithin(canonicalTarget, await realpath(agreement))) {
+      throw new Error("Invalid Agreement");
+    }
+  } catch {
+    throw new Error(`Agent target requires its own regular _agent/agreement.md: ${targetPath}`);
+  }
+
+  const name = canonicalTarget.split(sep).filter(Boolean).pop() || "agent";
+  return { name, path: canonicalTarget };
+}
+
+export async function resolveAgentTarget(
+  collectionRoot: string | undefined,
+  agentOrPath: string,
+  options: { cwd?: string } = {},
+): Promise<AgentRosterEntry> {
+  validatePath(agentOrPath, "agent");
+  const isPathSyntax =
+    agentOrPath.startsWith(".") ||
+    agentOrPath.startsWith("/") ||
+    agentOrPath.startsWith("~") ||
+    agentOrPath.includes("/") ||
+    agentOrPath.includes("\\");
+
+  if (isPathSyntax) {
+    return validateExplicitAgentTarget(agentOrPath, options);
+  }
+
+  if (collectionRoot) {
+    const roster = await discoverAgentRoster(collectionRoot);
+    const discovered = roster.agents.find((a) => a.name === agentOrPath);
+    if (discovered) return revalidateAgentTarget(collectionRoot, discovered);
+  }
+
+  try {
+    return await validateExplicitAgentTarget(agentOrPath, options);
+  } catch (err) {
+    if (collectionRoot) {
+      throw new Error(`Unknown agent: ${agentOrPath}`);
+    }
+    throw err;
+  }
+}
+
+
 export async function resolveCollectionRoot(collectionRoot: string): Promise<string> {
   validatePath(collectionRoot, "collectionRoot");
   if (!isAbsolute(collectionRoot)) throw new Error("collectionRoot must be an absolute path");
