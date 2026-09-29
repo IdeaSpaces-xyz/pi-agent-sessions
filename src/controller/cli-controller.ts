@@ -224,6 +224,8 @@ export class CliAgentController implements SessionController {
         killTimer = setTimeout(() => signalTree(child, "SIGKILL"), limits?.killGraceMs ?? KILL_GRACE_MS);
         killTimer.unref();
       };
+      const onParentExit = () => signalTree(child, "SIGKILL");
+      process.once("exit", onParentExit);
       const deadline = setTimeout(() => stop("timeout"), timeout);
       const done = new Promise<TurnSnapshot>((doneResolve) => {
         const settle = (code: number | null, signal: NodeJS.Signals | null) => {
@@ -231,6 +233,7 @@ export class CliAgentController implements SessionController {
           ended = true;
           clearTimeout(deadline);
           if (killTimer) clearTimeout(killTimer);
+          process.off("exit", onParentExit);
           this.child = undefined;
           this.active = undefined;
           const status = stopReason === "interrupted" || stopReason === "closed" ? "interrupted"

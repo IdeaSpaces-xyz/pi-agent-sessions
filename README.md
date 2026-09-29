@@ -10,7 +10,7 @@ The controller supports Node.js 20 or newer. Running it as a package follows Pi'
 pi install npm:@ideaspaces/pi-agent-sessions@0.2.2
 ```
 
-For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.1.52` separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. An older CLI is refused for explicit Pi launches because it cannot enforce saved project-resource trust. Pi launches need `IDEASPACES_PI_EXTENSIONS` (or the CLI's `--ext`) as before; Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
+For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.1.53` separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. An older CLI is refused for explicit Pi launches because it cannot enforce saved project-resource trust. CLI-backed Pi launches need `IDEASPACES_PI_EXTENSIONS` (or the CLI's `--ext`) as before; Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
 
 Optionally configure an absolute collection root for the legacy named roster and resident Pi controls:
 
