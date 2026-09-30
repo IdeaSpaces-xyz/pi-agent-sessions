@@ -7,10 +7,10 @@ Bounded fellow sessions from Pi. `agent_session` launches a selected local Agree
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.2.3
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.4
 ```
 
-For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.1.53` separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. An older CLI is refused for explicit Pi launches because it cannot enforce saved project-resource trust. CLI-backed Pi launches need `IDEASPACES_PI_EXTENSIONS` (or the CLI's `--ext`) as before; Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
+For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.2.1` or newer separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. CLI-backed Pi launches carry only the parent's *active trusted* extension paths and loaded skill paths through explicit `--ext`/`--skill`; an installed but inactive package, the target repo, and `IDEASPACES_PI_EXTENSIONS` do not select child executables. If no active parent extension is available, launch refuses with a remedy. Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
 
 Optionally configure an absolute collection root for the legacy named roster and resident Pi controls:
 
@@ -51,9 +51,9 @@ Ask Pi to list or consult a fellow agent. The model uses one tool with eight act
 | `interrupt` | Stop the current turn while keeping the child session alive. |
 | `close` | Idempotently close the owned process tree. |
 
-Claude CLI turns default to restricted Read/Grep/Glob and no MCP tools. To write, pass `readOnly:false`; `bypassPermissions` additionally requires that explicit choice. Read-only is a tool restriction, not a filesystem sandbox. `effort` accepts Claude Code's supported low/medium/high/xhigh/max levels; Pi's `thinking` is separate. A collection agent name addresses a canonical folder; an explicit path addresses **any** local IdeaSpace repo with its own regular Agreement. Neither a collection nor an agent kind is required for the path. An explicit Pi path and all Claude runs use CLI `agent run`; named collection Pi runs retain the resident RPC controller. The Pi controller supports queued busy turns and a durable topic; CLI turns do not. `conversationId` addresses the selected runtime's persisted transcript, while `runId` addresses only this parent's controller. On CLI resume, the conversation must exist at the same POV; an unknown id fails rather than creating a new transcript. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
+Claude CLI turns default to restricted Read/Grep/Glob and no MCP tools. To write, pass `readOnly:false`; `bypassPermissions` additionally requires that explicit choice. Read-only is a tool restriction, not a filesystem sandbox. `effort` accepts Claude Code's supported low/medium/high/xhigh/max levels; Pi's `thinking` is separate. A collection agent name addresses a canonical folder; an explicit path addresses **any** local IdeaSpace repo with its own regular Agreement. Neither a collection nor an agent kind is required for the path. An explicit Pi path and all Claude runs use CLI `agent run`; named collection Pi runs retain the resident RPC controller. CLI-backed first turns omit `--conversation`: the CLI mints the id, which is captured from its `message_start` event and used for exact follow-up and resume. The Pi controller supports queued busy turns and a durable topic; CLI turns do not. `conversationId` addresses the selected runtime's persisted transcript, while `runId` addresses only this parent's controller. On CLI resume, the conversation must exist at the same POV; an unknown id fails rather than creating a new transcript. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
 
-Resident Pi `resume` accepts the exact catalog conversation id and takes an exclusive package lease before opening `pi --session`. CLI-backed turns revalidate the selected Agreement before every spawn, use saved Pi project-resource trust unless explicitly approved, and bound output, failure, and process teardown. Their `resume` requires an existing conversation at that POV; it does **not** lease a live CLI session or keep it running after parent exit. Live detachment is a separate follow-on.
+Resident Pi `resume` accepts the exact catalog conversation id and takes an exclusive package lease before opening `pi --session`. CLI-backed turns revalidate the selected Agreement before every spawn, use saved Pi project-resource trust unless explicitly approved, forward a same-or-narrower active parent Pi resource set, and bound output, failure, and process teardown. Their `resume` requires an existing conversation at that POV; it does **not** lease a live CLI session or keep it running after parent exit. Live detachment is a separate follow-on.
 
 A terminal widget shows live child state, active tools, waiting dialogs, and unread replies. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
 
@@ -149,6 +149,16 @@ The full parent smoke additionally verifies labelled dialog forwarding, automati
 
 ```bash
 PI_AGENT_SESSIONS_REAL_PARENT_SMOKE=1 npm run test:real
+```
+
+For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-parent canary with a built CLI 0.2.1+ and two already-loaded connector package roots; it checks the Pi child's `is_status` tool call in its transcript, an exact-id follow-up and a real Claude child turn, without `IDEASPACES_PI_EXTENSIONS`:
+
+```bash
+PI_AGENT_SESSIONS_REAL_CLI_SMOKE=1 \
+IS_CLI_PATH=/absolute/path/to/ideaspaces.js \
+PI_AGENT_SESSIONS_CONNECTORS=/path/to/pi-is-space,/path/to/pi-local-context \
+PI_AGENT_SESSIONS_PACKAGE_ROOT=/path/to/installed/pi-agent-sessions \
+npm run test:real
 ```
 
 Set `PI_AGENT_SESSIONS_REAL_MODEL=provider/model` to select another authenticated model. The regular fake-process suite covers deterministic branch holding, timeout, denial, missing UI, and teardown races.

@@ -103,9 +103,16 @@ export interface OwnedAgentSessionsHooks {
 
 import type { CliControllerConfig } from "../controller/cli-controller.js";
 
+export interface ParentPiResources {
+  extensionPaths: string[];
+  skillPaths: string[];
+}
+
 export interface OwnedAgentSessionsDependencies {
   createController?: SessionControllerFactory;
   createClaudeController?: (config: CliControllerConfig) => Promise<SessionController>;
+  /** Derived from this parent's active trusted resources, never child discovery. */
+  resolveCliResources?: () => ParentPiResources;
   now?: () => Date;
 }
 

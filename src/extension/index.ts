@@ -20,6 +20,7 @@ import {
   resolveExtensionConfig,
 } from "./config.js";
 import { ParentUiAdapter } from "./parent-ui.js";
+import { parentPiResources } from "./parent-resources.js";
 
 const POINTER_ENTRY = "agent-session-pointer";
 const REPLY_MESSAGE = "agent-session-reply";
@@ -169,6 +170,11 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
           parentUi?.handle(event);
         },
         stateChanged: updateWidget,
+      }, {
+        resolveCliResources: () => {
+          if (!context) throw new Error("Parent Pi context is unavailable for child resource selection.");
+          return parentPiResources(pi, context);
+        },
       });
       updateWidget();
     } catch (error) {
