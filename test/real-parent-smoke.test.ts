@@ -161,6 +161,9 @@ describe.skipIf(process.env.PI_AGENT_SESSIONS_REAL_CLI_SMOKE !== "1")("real pare
       rpc.send({ id: "follow", type: "prompt", message: `Call agent_session send exactly once for runId ${rpc.runId} with message 'Reply SECOND_OK.' Do not call other tools.` });
       await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("SECOND_OK")), "same-id child follow-up");
       expect(readdirSync(sessionsDir).filter((file) => file.endsWith(".jsonl"))).toHaveLength(1);
+      await rpc.waitForIdle("Pi follow-up settled");
+      rpc.send({ id: "claude", type: "prompt", message: `Call agent_session start exactly once with agent ${target}, runtime claude, and message 'Reply CLAUDE_CHILD_OK.' Do not call other tools.` });
+      await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("CLAUDE_CHILD_OK")), "real Claude fellow reply");
     } finally { await rpc.close(); }
   }, 360_000);
 });

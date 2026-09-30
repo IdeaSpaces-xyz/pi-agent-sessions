@@ -151,7 +151,7 @@ The full parent smoke additionally verifies labelled dialog forwarding, automati
 PI_AGENT_SESSIONS_REAL_PARENT_SMOKE=1 npm run test:real
 ```
 
-For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-parent canary with a built CLI 0.2.1+ and two already-loaded connector package roots; it checks the child's `is_status` tool call in its transcript and an exact-id follow-up without `IDEASPACES_PI_EXTENSIONS`:
+For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-parent canary with a built CLI 0.2.1+ and two already-loaded connector package roots; it checks the Pi child's `is_status` tool call in its transcript, an exact-id follow-up and a real Claude child turn, without `IDEASPACES_PI_EXTENSIONS`:
 
 ```bash
 PI_AGENT_SESSIONS_REAL_CLI_SMOKE=1 \
