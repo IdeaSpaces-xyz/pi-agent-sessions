@@ -92,7 +92,7 @@ describe("CLI fellow controller", () => {
     const old = join(pov, "old-cli.cjs");
     writeFileSync(old, "process.stderr.write('--pi-trust --ext --skill\\n');\n");
     await expect(CliAgentController.start({ target: pov, runtime: "pi", extensionPaths: [cli], cliPath: old }))
-      .rejects.toThrow("--no-skills");
+      .rejects.toThrow("skill isolation");
   });
 
   it("rejects missing Agreement and invalid Claude conversation id before spawn", () => {

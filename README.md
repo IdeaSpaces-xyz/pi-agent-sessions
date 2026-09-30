@@ -157,6 +157,7 @@ For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-p
 PI_AGENT_SESSIONS_REAL_CLI_SMOKE=1 \
 IS_CLI_PATH=/absolute/path/to/ideaspaces.js \
 PI_AGENT_SESSIONS_CONNECTORS=/path/to/pi-is-space,/path/to/pi-local-context \
+PI_AGENT_SESSIONS_PACKAGE_ROOT=/path/to/installed/pi-agent-sessions \
 npm run test:real
 ```
 

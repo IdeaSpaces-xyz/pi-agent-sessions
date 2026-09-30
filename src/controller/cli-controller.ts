@@ -90,11 +90,14 @@ export class CliAgentController implements SessionController {
       child.once("error", () => { clearTimeout(timer); resolve({ out: "", code: 1 }); });
       child.once("close", (code) => { clearTimeout(timer); resolve({ out, code: code ?? 1 }); });
     });
-    const required = this.config.runtime === "pi" ? ["--pi-trust", "--ext", "--skill", "--no-skills"] :
+    const required = this.config.runtime === "pi" ? ["--pi-trust", "--ext", "--skill"] :
       ["--read-only", ...(this.config.effort ? ["--claude-effort"] : [])];
     const missing = required.find((flag) => !result.out.includes(flag));
     if (result.code !== 0 || missing) {
       throw new Error(`CLI does not support ${missing ?? required[0]}; update the IdeaSpaces CLI before launching this POV.`);
+    }
+    if (this.config.runtime === "pi" && !result.out.includes("skill discovery is disabled")) {
+      throw new Error("CLI lacks Pi child skill isolation; update IdeaSpaces CLI to 0.2.1 or newer before launching this POV.");
     }
   }
 

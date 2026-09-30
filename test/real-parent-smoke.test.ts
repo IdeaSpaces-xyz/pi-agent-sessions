@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { StrictJsonlDecoder } from "../src/controller/jsonl.js";
 
 const enabled = process.env.PI_AGENT_SESSIONS_REAL_PARENT_SMOKE === "1";
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const packageRoot = process.env.PI_AGENT_SESSIONS_PACKAGE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), "..");
 const model = process.env.PI_AGENT_SESSIONS_REAL_MODEL ?? "openai-codex/gpt-5.5";
 const roots: string[] = [];
 
