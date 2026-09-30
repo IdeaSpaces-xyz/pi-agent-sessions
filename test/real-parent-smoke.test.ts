@@ -1,5 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,7 +9,7 @@ import { StrictJsonlDecoder } from "../src/controller/jsonl.js";
 
 const enabled = process.env.PI_AGENT_SESSIONS_REAL_PARENT_SMOKE === "1";
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const model = process.env.PI_AGENT_SESSIONS_REAL_MODEL ?? "openai-codex/gpt-5.4-mini";
+const model = process.env.PI_AGENT_SESSIONS_REAL_MODEL ?? "openai-codex/gpt-5.5";
 const roots: string[] = [];
 
 afterAll(async () => {
@@ -121,6 +121,50 @@ describe.skipIf(!enabled)("real parent Pi extension smoke", () => {
   }, 360_000);
 });
 
+describe.skipIf(process.env.PI_AGENT_SESSIONS_REAL_CLI_SMOKE !== "1")("real parent → CLI-backed Pi child", () => {
+  it("inherits active parent connectors, observes a real child tool, and follows up on the exact id", async () => {
+    const cli = process.env.IS_CLI_PATH;
+    if (!cli) throw new Error("Set IS_CLI_PATH to the installed CLI 0.2.0+ bundle for this real smoke.");
+    const connectors = process.env.PI_AGENT_SESSIONS_CONNECTORS;
+    if (!connectors) throw new Error("Set PI_AGENT_SESSIONS_CONNECTORS to two reviewed installed Pi package roots, separated by a comma.");
+    const [space, context] = connectors.split(",");
+    if (!space || !context) throw new Error("Two connector roots are required.");
+    const root = mkdtempSync(join(tmpdir(), "pi-fellow-cli-smoke-")); roots.push(root);
+    const parent = join(root, "parent");
+    const target = join(root, "external-fellow");
+    await mkdir(parent, { recursive: true });
+    await mkdir(join(target, "_agent"), { recursive: true });
+    writeFileSync(join(target, "_agent", "agreement.md"), "---\nname: Fellow\n---\n# Fellow\nReply briefly.\n");
+    const init = spawnSync("git", ["init", "-q"], { cwd: target, encoding: "utf8" });
+    if (init.status !== 0) throw new Error(init.stderr);
+    const env = { ...process.env, PI_AGENT_SESSIONS_DEPTH: undefined, PI_AGENT_SESSION_DEPTH: undefined,
+      IDEASPACES_PI_EXTENSIONS: undefined, IDEASPACES_PI_SKILLS: undefined };
+    const rpc = new ParentRpcHarness(spawn("pi", [
+      "--mode", "rpc", "--no-extensions", "--no-skills", "--no-approve",
+      "--extension", join(packageRoot, "dist", "index.js"),
+      "--extension", join(space, "src", "index.ts"), "--extension", join(context, "src", "index.ts"),
+      "--skill", join(space, "skills"), "--skill", join(context, "skills"),
+      "--model", model,
+    ], { cwd: parent, env, stdio: ["pipe", "pipe", "pipe"] }));
+    try {
+      rpc.send({ id: "ready", type: "get_state" });
+      await rpc.waitFor(() => rpc.events.some((event) => event.type === "response" && event.id === "ready" && event.success), "parent ready", 30_000);
+      rpc.send({ id: "start", type: "prompt", message: `Call agent_session start exactly once with agent ${target}, runtime pi, and message 'Call is_status exactly once, then reply CHILD_TOOL_OK.' Do not call other tools.` });
+      await rpc.waitFor(() => !!rpc.runId, "owned run id", 45_000);
+      await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("CHILD_TOOL_OK")), "child tool response");
+      const sessionsDir = join(target, ".pi", "sessions");
+      const transcript = readdirSync(sessionsDir).filter((file) => file.endsWith(".jsonl"))
+        .map((file) => readFileSync(join(sessionsDir, file), "utf8")).join("\n");
+      expect(transcript).toContain('"name":"is_status"');
+      expect(transcript).toContain('"toolName":"is_status"');
+      await rpc.waitForIdle("parent child reply");
+      rpc.send({ id: "follow", type: "prompt", message: `Call agent_session send exactly once for runId ${rpc.runId} with message 'Reply SECOND_OK.' Do not call other tools.` });
+      await rpc.waitFor(() => rpc.fellowReplies.some((text) => text.includes("SECOND_OK")), "same-id child follow-up");
+      expect(readdirSync(sessionsDir).filter((file) => file.endsWith(".jsonl"))).toHaveLength(1);
+    } finally { await rpc.close(); }
+  }, 360_000);
+});
+
 class ParentRpcHarness {
   readonly events: any[] = [];
   readonly assistantTexts: string[] = [];
@@ -157,7 +201,7 @@ class ParentRpcHarness {
         reached,
         new Promise<void>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`Timed out waiting for ${label}. Stderr: ${this.stderr}. Assistants: ${JSON.stringify(this.assistantTexts)}. Fellow replies: ${JSON.stringify(this.fellowReplies)}`)),
+            () => reject(new Error(`Timed out waiting for ${label}. Stderr: ${this.stderr}. Assistants: ${JSON.stringify(this.assistantTexts)}. Fellow replies: ${JSON.stringify(this.fellowReplies)}. Events: ${JSON.stringify(this.events.slice(-16).map((e) => ({ type: e.type, toolName: e.toolName, error: e.error, role: e.message?.role, stopReason: e.message?.stopReason, content: JSON.stringify(e.message?.content)?.slice(0, 350), result: e.result?.content?.[0]?.text?.slice(0, 200) })))}`)),
             timeoutMs,
           );
         }),

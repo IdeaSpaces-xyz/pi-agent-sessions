@@ -46,6 +46,7 @@ export class OwnedAgentSessions {
   private readonly createController: NonNullable<OwnedAgentSessionsDependencies["createController"]>;
   private readonly createClaudeController: NonNullable<OwnedAgentSessionsDependencies["createClaudeController"]>;
   private readonly now: () => Date;
+  private readonly resolveCliResources?: OwnedAgentSessionsDependencies["resolveCliResources"];
   private readonly runs = new Map<string, ManagedRun>();
   private branchEpoch = 0;
   private generation = 0;
@@ -61,6 +62,7 @@ export class OwnedAgentSessions {
     this.createController = dependencies.createController ?? ((input) => PersistentRpcController.start(input));
     this.createClaudeController = dependencies.createClaudeController ?? ((input) => CliAgentController.start(input));
     this.now = dependencies.now ?? (() => new Date());
+    this.resolveCliResources = dependencies.resolveCliResources;
     validateDepth(config.depth);
   }
 
@@ -118,8 +120,10 @@ export class OwnedAgentSessions {
       if (useCli && input.topic) throw new Error("CLI launches name the conversation from its first message; topic is available only to resident Pi runs.");
       let controller: SessionController;
       if (useCli) {
+        const resources = runtime === "pi" ? this.requireParentResources() : undefined;
         controller = await this.createClaudeController({
           target: target.path,
+          ...resources,
           runtime,
           model: input.model,
           thinking: input.thinking,
@@ -167,8 +171,10 @@ export class OwnedAgentSessions {
       let releaseLease: (() => void) | undefined;
 
       if (useCli) {
+        const resources = runtime === "pi" ? this.requireParentResources() : undefined;
         controller = await this.createClaudeController({
           target: target.path,
+          ...resources,
           runtime,
           model: input.model,
           thinking: input.thinking,
@@ -359,8 +365,14 @@ export class OwnedAgentSessions {
       });
     }
     if (controller.onStateChanged) {
+      let pointedId = controller.snapshot().sessionId;
       run.unsubscribeState = controller.onStateChanged(() => {
         if (this.runs.get(controller.runId) !== run) return;
+        const mintedId = controller.snapshot().sessionId;
+        if (mintedId && mintedId !== pointedId) {
+          pointedId = mintedId;
+          this.writePointer(run, "started"); // the CLI minted the id after the initial pointer
+        }
         this.hooks.stateChanged?.();
       });
     }
@@ -498,6 +510,12 @@ export class OwnedAgentSessions {
 
   private async resolveTarget(agentOrPath: string): Promise<AgentRosterEntry> {
     return resolveAgentTarget(this.config.collectionRoot, agentOrPath);
+  }
+
+  private requireParentResources(): { extensionPaths: string[]; skillPaths: string[] } {
+    const resources = this.resolveCliResources?.();
+    if (!resources?.extensionPaths.length) throw new Error("No active trusted Pi extension set from the launching parent; load the connector in the parent before starting a CLI-backed Pi child.");
+    return resources;
   }
 
   private requireRun(runId: string): ManagedRun {

@@ -22,6 +22,9 @@ export interface CliControllerConfig {
   readOnly?: boolean;
   trust?: "saved" | "explicit";
   resumeConversationId?: string;
+  /** Already active/trusted paths from the launching Pi parent; never child discovery. */
+  extensionPaths?: readonly string[];
+  skillPaths?: readonly string[];
   cliPath?: string;
   env?: Readonly<Record<string, string | undefined>>;
   limits?: { settlementTimeoutMs?: number; maxLineBytes?: number; maxReplyChars?: number; maxStderrBytes?: number; killGraceMs?: number };
@@ -33,7 +36,7 @@ type TargetIdentity = { root: string; device: number; inode: number; contractDev
 /** A short-lived CLI process per turn. The parent owns this controller, not a detached live session. */
 export class CliAgentController implements SessionController {
   readonly runId = `cli-${randomUUID()}`;
-  readonly conversationId: string;
+  conversationId: string;
   private readonly identity: TargetIdentity;
   private readonly cliPath: string;
   private readonly spawnImpl: typeof spawn;
@@ -50,12 +53,16 @@ export class CliAgentController implements SessionController {
       throw new Error("Claude bypassPermissions requires readOnly:false explicitly.");
     }
     this.identity = targetIdentity(config.target);
-    this.conversationId = config.resumeConversationId ?? randomUUID();
-    if (config.runtime === "claude" && !UUID.test(this.conversationId)) {
+    this.conversationId = config.resumeConversationId ?? ""; // first turn belongs to CLI minting
+    if (this.conversationId && config.runtime === "claude" && !UUID.test(this.conversationId)) {
       throw new Error("Claude conversation id must be a UUID");
     }
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(this.conversationId)) {
+    if (this.conversationId && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(this.conversationId)) {
       throw new Error("Invalid conversation id");
+    }
+    if (config.runtime === "pi" && (!config.extensionPaths?.length || config.extensionPaths.some((path) => !path || path.includes(",")) ||
+        config.skillPaths?.some((path) => !path || path.includes(",")))) {
+      throw new Error("Active parent Pi resource paths are absent or contain a comma; cannot pass an exact child set through CLI --ext/--skill.");
     }
     this.cliPath = config.cliPath ?? process.env.IS_CLI_PATH?.trim() ?? "ideaspaces";
     this.spawnImpl = config.spawn ?? spawn;
@@ -83,7 +90,7 @@ export class CliAgentController implements SessionController {
       child.once("error", () => { clearTimeout(timer); resolve({ out: "", code: 1 }); });
       child.once("close", (code) => { clearTimeout(timer); resolve({ out, code: code ?? 1 }); });
     });
-    const required = this.config.runtime === "pi" ? ["--pi-trust"] :
+    const required = this.config.runtime === "pi" ? ["--pi-trust", "--ext", "--skill", "--no-skills"] :
       ["--read-only", ...(this.config.effort ? ["--claude-effort"] : [])];
     const missing = required.find((flag) => !result.out.includes(flag));
     if (result.code !== 0 || missing) {
@@ -97,7 +104,7 @@ export class CliAgentController implements SessionController {
       status: this.statusValue, runtime: this.config.runtime, model: this.config.model,
       thinking: this.config.thinking, effort: this.config.effort,
       readOnly: this.config.runtime === "claude" ? this.config.readOnly !== false : undefined,
-      sessionId: this.conversationId,
+      sessionId: this.conversationId || undefined,
       activeTools: [], outstandingRequestIds: [], outstandingDialogs: [], recentEvents: [],
       turns: this.turns.map((turn) => ({ ...turn })), stderr: "",
     };
@@ -192,7 +199,12 @@ export class CliAgentController implements SessionController {
 
   private runTurn(operationId: string, message: string, startedAt: string): Promise<TurnSnapshot> {
     const args = ["--json", "agent", "run", this.identity.root, "--runtime", this.config.runtime,
-      "--conversation", this.conversationId, `--message=${message}`];
+      `--message=${message}`];
+    if (this.conversationId) args.push("--conversation", this.conversationId);
+    if (this.config.runtime === "pi") {
+      args.push("--ext", this.config.extensionPaths!.join(","));
+      if (this.config.skillPaths?.length) args.push("--skill", this.config.skillPaths.join(","));
+    }
     if (this.config.model) args.push("--model", this.config.model);
     if (this.config.thinking) args.push("--pi-thinking", this.config.thinking);
     if (this.config.runtime === "pi") args.push("--pi-trust", this.config.trust ?? "saved");
@@ -216,7 +228,8 @@ export class CliAgentController implements SessionController {
         child = this.spawnImpl(command, argv, {
           cwd: this.identity.root, shell: false, detached: true, windowsHide: true,
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, ...this.config.env, PI_AGENT_SESSION_DEPTH: "1" },
+          env: { ...process.env, ...this.config.env, PI_AGENT_SESSION_DEPTH: "1",
+            IDEASPACES_PI_EXTENSIONS: undefined, IDEASPACES_PI_SKILLS: undefined },
         });
       } catch (err) {
         this.finish({ operationId, status: "failed", startedAt, error: String(err) }, resolve);
@@ -251,7 +264,7 @@ export class CliAgentController implements SessionController {
           this.child = undefined;
           this.active = undefined;
           const status = stopReason === "interrupted" || stopReason === "closed" ? "interrupted"
-            : code === 0 && complete && !failure && !stopReason ? "completed" : "failed";
+            : code === 0 && complete && !!this.conversationId && !failure && !stopReason ? "completed" : "failed";
           const detail = stopReason === "timeout" ? `CLI turn timed out after ${timeout}ms`
             : error || (signal ? `CLI exited on ${signal}` : `CLI exited ${code} without a successful turn_complete`);
           const turn: TurnSnapshot = { operationId, startedAt, settledAt: new Date().toISOString(), status,
@@ -274,6 +287,19 @@ export class CliAgentController implements SessionController {
           if (Buffer.byteLength(raw) > maxLine) { error = "CLI event exceeds output limit"; stop("overflow"); return; }
           let event: Record<string, unknown>;
           try { event = JSON.parse(raw); } catch { error = "Invalid CLI JSON event"; stop("overflow"); return; }
+          if (event.type === "message_start") {
+            const id = event.conversation_id;
+            if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id) ||
+                (this.config.runtime === "claude" && !UUID.test(id)) ||
+                (this.conversationId && id !== this.conversationId)) {
+              error = "CLI returned an invalid or different conversation id";
+              failure = true;
+              stop("overflow");
+              return;
+            }
+            this.conversationId = id;
+            this.notify();
+          }
           if (event.type === "text_delta" && typeof event.delta === "string") reply = (reply + event.delta).slice(0, maxReply);
           if (event.type === "turn_complete") {
             complete = true;

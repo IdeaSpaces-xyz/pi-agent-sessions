@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OwnedAgentSessions } from "../src/sessions/owned-sessions.js";
@@ -56,7 +56,7 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
   const out=e=>console.log(JSON.stringify(e));out({type:'system',subtype:'init',session_id:id,model:'fake',cwd:process.cwd()});
   if(prompt.includes('auth_fail')){out({type:'result',subtype:'error_during_execution',is_error:true,errors:['Login required']});return;}
   const slug=process.cwd().replace(/[^a-zA-Z0-9]/gu,'-');const file=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',slug,id+'.jsonl');
-  fs.mkdirSync(path.dirname(file),{recursive:true});fs.appendFileSync(file,JSON.stringify({type:'user',sessionId:id,message:{role:'user',content:prompt}})+'\\n');
+  fs.mkdirSync(path.dirname(file),{recursive:true});fs.appendFileSync(file,JSON.stringify({type:'user',sessionId:id,cwd:process.cwd(),message:{role:'user',content:prompt}})+'\\n');
   out({type:'stream_event',event:{type:'message_start'}});
   out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'claude:'+prompt}}});
   out({type:'result',subtype:'success',is_error:false,result:'claude:'+prompt,session_id:id,num_turns:1});
@@ -71,36 +71,46 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
     const previous = { PATH: process.env.PATH, IS_CLI_PATH: process.env.IS_CLI_PATH,
       CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, IDEASPACES_PI_EXTENSIONS: process.env.IDEASPACES_PI_EXTENSIONS,
       FAKE_PI_ARGS: process.env.FAKE_PI_ARGS, FAKE_CLAUDE_ARGS: process.env.FAKE_CLAUDE_ARGS };
+    const extension = join(root, "parent-extension.ts"); writeFileSync(extension, "export default () => {};\n");
+    const skills = join(root, "parent-skills"); mkdirSync(skills);
     process.env.PATH = `${bin}:${previous.PATH}`;
     process.env.IS_CLI_PATH = cli!;
     process.env.CLAUDE_CONFIG_DIR = join(root, "claude-config");
-    process.env.IDEASPACES_PI_EXTENSIONS = join(root, "dummy-extension");
+    delete process.env.IDEASPACES_PI_EXTENSIONS;
     process.env.FAKE_PI_ARGS = join(root, "pi-argv.jsonl");
     process.env.FAKE_CLAUDE_ARGS = join(root, "claude-argv.jsonl");
     const replies: AgentReply[] = [];
-    const sessions = new OwnedAgentSessions({}, { deliver: (reply) => replies.push(reply) });
+    const sessions = new OwnedAgentSessions({}, { deliver: (reply) => replies.push(reply) }, {
+      resolveCliResources: () => ({ extensionPaths: [extension], skillPaths: [skills] }),
+    });
     try {
       const pi = await sessions.start({ agent: pov, runtime: "pi", model: "fake/model", thinking: "high", message: "first" });
       expect((await settle(sessions, pi.run.session.runId)).reply).toBe("pi:first");
       const sent = await sessions.send({ runId: pi.run.session.runId, message: "second" });
       expect((await settle(sessions, sent.run.session.runId)).reply).toBe("pi:second");
       const argv = readFileSync(process.env.FAKE_PI_ARGS, "utf8").trim().split("\n").map((x) => JSON.parse(x) as string[]);
-      expect(argv[0]).toEqual(expect.arrayContaining(["--model", "fake/model", "--thinking", "high"]));
+      expect(argv[0]).toEqual(expect.arrayContaining(["--model", "fake/model", "--thinking", "high", "--extension", realpathSync(extension), "--skill", realpathSync(skills), "--no-extensions"]));
+      expect(argv[0]).not.toContain("--approve");
       expect(argv[0]).not.toContain("-a"); // saved trust, not implicit project approval
-      const piResume = await sessions.resume({ agent: pov, runtime: "pi", conversationId: pi.run.session.sessionId!, message: "third" });
+      const piId = sessions.status({ runId: pi.run.session.runId }).runs[0].session.sessionId!;
+      expect(piId).toMatch(/^local-/);
+      const piResume = await sessions.resume({ agent: pov, runtime: "pi", conversationId: piId, message: "third" });
       expect((await settle(sessions, piResume.run.session.runId)).reply).toBe("pi:third");
       await sessions.close(pi.run.session.runId);
       await sessions.close(piResume.run.session.runId);
 
       const claude = await sessions.start({ agent: pov, runtime: "claude", model: "sonnet", effort: "high", message: "hello" });
       expect((await settle(sessions, claude.run.session.runId)).reply).toBe("claude:hello");
-      const resumed = await sessions.resume({ agent: pov, runtime: "claude", conversationId: claude.run.session.sessionId!,
+      const claudeId = sessions.status({ runId: claude.run.session.runId }).runs[0].session.sessionId!;
+      expect(claudeId).toMatch(/^[0-9a-f-]{36}$/);
+      const resumed = await sessions.resume({ agent: pov, runtime: "claude", conversationId: claudeId,
         effort: "medium", message: "again" });
       expect((await settle(sessions, resumed.run.session.runId)).reply).toBe("claude:again");
       const claudeArgs = readFileSync(process.env.FAKE_CLAUDE_ARGS, "utf8").trim().split("\n").map((x) => JSON.parse(x) as string[]);
       expect(claudeArgs[0]).toEqual(expect.arrayContaining(["--model", "sonnet", "--effort", "high",
         "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--permission-mode", "dontAsk"]));
-      expect(claudeArgs[1]).toEqual(expect.arrayContaining(["--resume", claude.run.session.sessionId!, "--effort", "medium", "--tools"]));
+      expect(claudeArgs[0]).not.toContain("--resume");
+      expect(claudeArgs[1]).toEqual(expect.arrayContaining(["--resume", claudeId, "--effort", "medium", "--tools"]));
       const failed = await sessions.start({ agent: pov, runtime: "claude", message: "auth_fail" });
       expect((await settle(sessions, failed.run.session.runId)).status).toBe("failed");
       expect(replies.some((r) => r.error?.includes("Login required"))).toBe(true);
