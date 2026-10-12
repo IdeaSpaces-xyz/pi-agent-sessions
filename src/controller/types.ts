@@ -155,7 +155,10 @@ export interface AgentSessionSnapshot {
   cwd: string;
   status: ProcessStatus;
   runtime?: "pi" | "claude";
+  /** The model override requested at launch, if any. Not evidence of what ran. */
   model?: string;
+  /** The model the child runtime itself reported for its latest turn; absent until reported. */
+  observedModel?: string;
   thinking?: string;
   effort?: string;
   readOnly?: boolean;

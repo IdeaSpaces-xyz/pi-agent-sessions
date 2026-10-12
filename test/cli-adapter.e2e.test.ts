@@ -34,7 +34,7 @@ const id=args[args.indexOf('--session-id')+1];let buf='';
 process.stdin.on('data',data=>{buf+=String(data);while(buf.includes('\\n')){
   const index=buf.indexOf('\\n');const raw=buf.slice(0,index);buf=buf.slice(index+1);if(!raw)continue;
   const c=JSON.parse(raw);
-  if(c.type==='get_state')console.log(JSON.stringify({type:'response',command:'get_state',success:true,data:{sessionName:'Existing'}}));
+  if(c.type==='get_state')console.log(JSON.stringify({type:'response',command:'get_state',success:true,data:{sessionName:'Existing',model:{provider:'stand-in',id:'resolved-model'}}}));
   if(c.type==='prompt'){
     if(c.message.includes('auth_fail')){console.log(JSON.stringify({type:'response',command:'prompt',success:false,error:'Authentication failed'}));continue;}
     const dir=args[args.indexOf('--session-dir')+1],file=path.join(dir,'turn_'+id+'.jsonl');
@@ -89,7 +89,9 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       const sent = await sessions.send({ runId: pi.run.session.runId, message: "second" });
       expect((await settle(sessions, sent.run.session.runId)).reply).toBe("pi:second");
       const argv = readFileSync(process.env.FAKE_PI_ARGS, "utf8").trim().split("\n").map((x) => JSON.parse(x) as string[]);
-      expect(argv[0]).toEqual(expect.arrayContaining(["--model", "fake/model", "--thinking", "high", "--extension", realpathSync(extension), "--skill", realpathSync(skills), "--no-extensions"]));
+      expect(argv[0]).toEqual(expect.arrayContaining(["--model", "fake/model", "--thinking", "high", "--extension", realpathSync(extension), "--skill", realpathSync(skills), "--no-extensions", "--no-skills"]));
+      expect(sessions.status({ runId: pi.run.session.runId }).runs[0].session)
+        .toMatchObject({ runtime: "pi", model: "fake/model", observedModel: "stand-in/resolved-model" });
       expect(argv[0]).not.toContain("--approve");
       expect(argv[0]).not.toContain("-a"); // saved trust, not implicit project approval
       const piId = sessions.status({ runId: pi.run.session.runId }).runs[0].session.sessionId!;
@@ -103,6 +105,8 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       expect((await settle(sessions, claude.run.session.runId)).reply).toBe("claude:hello");
       const claudeId = sessions.status({ runId: claude.run.session.runId }).runs[0].session.sessionId!;
       expect(claudeId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(sessions.status({ runId: claude.run.session.runId }).runs[0].session)
+        .toMatchObject({ runtime: "claude", model: "sonnet", observedModel: "fake" });
       const resumed = await sessions.resume({ agent: pov, runtime: "claude", conversationId: claudeId,
         effort: "medium", message: "again" });
       expect((await settle(sessions, resumed.run.session.runId)).reply).toBe("claude:again");

@@ -54,6 +54,18 @@ afterEach(async () => {
 });
 
 describe("PersistentRpcController", () => {
+  it("reports the model Pi says it is running, apart from the requested one, and follows a change", async () => {
+    const controller = await start("model-change", { model: "provider/requested" });
+    expect(controller.snapshot()).toMatchObject({ model: "provider/requested", observedModel: "fake/start-model" });
+    await controller.promptAndWait("one");
+    expect(controller.snapshot().observedModel).toBe("fake/turn-model-1");
+    await controller.promptAndWait("two");
+    expect(controller.snapshot()).toMatchObject({ model: "provider/requested", observedModel: "fake/turn-model-2" });
+    const silent = await start("no-model");
+    await silent.promptAndWait("one");
+    expect(silent.snapshot().observedModel).toBeUndefined();
+  });
+
   it("launches with exact cwd, argv, sanitized env, and a correlated readiness handshake", async () => {
     const target = tempRoot();
     const record = join(target, "invocation.json");

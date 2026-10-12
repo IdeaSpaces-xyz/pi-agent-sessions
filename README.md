@@ -7,10 +7,10 @@ Bounded fellow sessions from Pi. `agent_session` launches a selected local Agree
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.2.4
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.5
 ```
 
-For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.2.1` or newer separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. CLI-backed Pi launches carry only the parent's *active trusted* extension paths and loaded skill paths through explicit `--ext`/`--skill`; an installed but inactive package, the target repo, and `IDEASPACES_PI_EXTENSIONS` do not select child executables. If no active parent extension is available, launch refuses with a remedy. Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
+For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.2.17` or newer separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. Before the first turn the package asks the CLI `agent capabilities --json` for what `agent run` guarantees — Pi extension and skill isolation and trust, Claude read-only, effort and permission mode — and refuses to launch, naming the missing guarantee, when the CLI cannot answer or lacks one. It never reads `--help`. CLI-backed Pi launches carry only the parent's *active trusted* extension paths and loaded skill paths through explicit `--ext`/`--skill`; an installed but inactive package, the target repo, and `IDEASPACES_PI_EXTENSIONS` do not select child executables. If no active parent extension is available, launch refuses with a remedy. Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
 
 Optionally configure an absolute collection root for the legacy named roster and resident Pi controls:
 
@@ -55,9 +55,9 @@ Claude CLI turns default to restricted Read/Grep/Glob and no MCP tools. To write
 
 Resident Pi `resume` accepts the exact catalog conversation id and takes an exclusive package lease before opening `pi --session`. CLI-backed turns revalidate the selected Agreement before every spawn, use saved Pi project-resource trust unless explicitly approved, forward a same-or-narrower active parent Pi resource set, and bound output, failure, and process teardown. Their `resume` requires an existing conversation at that POV; it does **not** lease a live CLI session or keep it running after parent exit. Live detachment is a separate follow-on.
 
-A terminal widget shows live child state, active tools, waiting dialogs, and unread replies. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
+A terminal widget shows each owned run as `agent · harness · model · status`, with active tools, waiting dialogs, and unread replies; `list` and `status` print the same identity. The harness is Pi or Claude. The model is what the child runtime itself reported — Pi's session state and assistant messages, or the CLI's `model_observed` for its latest turn — and is followed by `(requested X)` when a different override was asked for. Until the runtime reports one, a request shows as `X (requested, not reported)` and no request as `model not reported`; a request is never shown as the model that ran. Agents with no run are listed by name only. Completed replies arrive as labelled Pi custom messages. If the parent moved through `/tree`, the package does not inject into the new branch; `status` returns the held reply instead.
 
-Normal tool results keep only the agent, clearly labelled `runId`, process state, latest operation, and unread count. Transcript paths, stderr, protocol errors, and aggregated recent-event counts appear only when `status` is called with diagnostic `includeEvents: true`. Streaming `message_update` events update live state and usage but are not retained in diagnostic history. Start and send complete in the background; wait for the automatic reply rather than polling status.
+Normal tool results keep only the agent, harness, model evidence, clearly labelled `runId`, process state, latest operation, and unread count. Transcript paths, stderr, protocol errors, and aggregated recent-event counts appear only when `status` is called with diagnostic `includeEvents: true`. Streaming `message_update` events update live state and usage but are not retained in diagnostic history. Start and send complete in the background; wait for the automatic reply rather than polling status.
 
 Child `select`, `confirm`, `input`, and `editor` requests are labelled and serialized through one parent FIFO. Responses remain correlated to the requesting child. Missing UI, request timeout, interruption, close, or parent teardown cancels the exact request; absence is never converted into approval. Child notifications, statuses, and string widgets are projected with run-scoped keys. Requests to replace the parent title or editor text are reported as unsupported.
 
@@ -151,7 +151,7 @@ The full parent smoke additionally verifies labelled dialog forwarding, automati
 PI_AGENT_SESSIONS_REAL_PARENT_SMOKE=1 npm run test:real
 ```
 
-For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-parent canary with a built CLI 0.2.1+ and two already-loaded connector package roots; it checks the Pi child's `is_status` tool call in its transcript, an exact-id follow-up and a real Claude child turn, without `IDEASPACES_PI_EXTENSIONS`:
+For a CLI-backed Pi child from an explicit Agreement repo, use the opt-in real-parent canary with a built CLI 0.2.17+ and two already-loaded connector package roots; it checks the Pi child's `is_status` tool call in its transcript, an exact-id follow-up and a real Claude child turn, without `IDEASPACES_PI_EXTENSIONS`:
 
 ```bash
 PI_AGENT_SESSIONS_REAL_CLI_SMOKE=1 \

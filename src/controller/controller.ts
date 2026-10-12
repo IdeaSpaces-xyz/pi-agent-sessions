@@ -77,6 +77,8 @@ export class PersistentRpcController {
   private status: AgentSessionSnapshot["status"] = "starting";
   private sessionId: string | undefined;
   private sessionFile: string | undefined;
+  /** Pi's own report: get_state at launch, then each assistant message's provider/model. */
+  private observedModel: string | undefined;
   private usage: UsageSnapshot | undefined;
   private stderr = "";
   private protocolError: string | undefined;
@@ -124,6 +126,7 @@ export class PersistentRpcController {
       status: this.status,
       runtime: "pi",
       model: this.config.model,
+      observedModel: this.observedModel,
       thinking: this.config.thinking,
       sessionId: this.sessionId,
       sessionFile: this.sessionFile,
@@ -287,6 +290,8 @@ export class PersistentRpcController {
     this.verifyResumedSession(state);
     this.sessionId = state.sessionId;
     if (typeof state.sessionFile === "string") this.sessionFile = state.sessionFile;
+    const model = asObjectOrUndefined(state.model);
+    this.observedModel = piModelLabel(model?.provider, model?.id);
     this.status = state.isStreaming === true ? "running" : "idle";
     this.notifyStateChanged();
   }
@@ -494,6 +499,12 @@ export class PersistentRpcController {
     if (!turn || isTurnOutcome(turn.status)) return;
     const message = asObjectOrUndefined(value);
     if (!message || message.role !== "assistant") return;
+    // An assistant message names the model that produced it, so a mid-session model change shows here.
+    const observed = piModelLabel(message.provider, message.model);
+    if (observed && observed !== this.observedModel) {
+      this.observedModel = observed;
+      this.notifyStateChanged();
+    }
     turn.sawAssistant = true;
     turn.reply = truncate(extractAssistantText(message.content), this.config.limits.maxReplyChars);
     if (typeof message.stopReason === "string") turn.stopReason = message.stopReason;
@@ -887,6 +898,16 @@ function asObject(value: unknown, field: string): Record<string, unknown> {
 
 function asObjectOrUndefined(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** `provider/id` as Pi reports it, or undefined when Pi names no printable bounded model. */
+export function piModelLabel(provider: unknown, id: unknown): string | undefined {
+  const clean = (value: unknown) => typeof value === "string" && value.trim() && value.length <= 200 &&
+    !/[\u0000-\u001f\u007f]/.test(value) ? value.trim() : undefined;
+  const model = clean(id);
+  if (!model) return undefined;
+  const source = clean(provider);
+  return source ? `${source}/${model}` : model;
 }
 
 function extractAssistantText(content: unknown): string {
