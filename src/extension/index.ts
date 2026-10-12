@@ -21,6 +21,7 @@ import {
 } from "./config.js";
 import { ParentUiAdapter } from "./parent-ui.js";
 import { parentPiResources } from "./parent-resources.js";
+import { runIdentity } from "./run-identity.js";
 
 const POINTER_ENTRY = "agent-session-pointer";
 const REPLY_MESSAGE = "agent-session-reply";
@@ -357,7 +358,7 @@ function buildSessionWidget(status: OwnedSessionsStatus): string[] | undefined {
     const tools = run.session.activeTools.map((tool) => tool.toolName);
     const activity = tools.length > 0 ? ` · ${tools.slice(0, 3).join(", ")}` : "";
     const unread = run.unreadReplies > 0 ? ` · ${run.unreadReplies} unread` : "";
-    lines.push(`${run.agent} · ${run.session.status}${activity}${unread}`);
+    lines.push(`${runIdentity(run.agent, run.session)}${activity}${unread}`);
   }
   if (visible.length > MAX_WIDGET_RUNS) lines.push(`…and ${visible.length - MAX_WIDGET_RUNS} more`);
   return lines;
@@ -389,7 +390,7 @@ function formatOperation(verb: string, operation: SessionOperationResult): strin
 
 function formatRunLine(run: OwnedRunSnapshot): string {
   const unread = run.unreadReplies > 0 ? ` · ${run.unreadReplies} unread` : "";
-  return `${run.agent} — ${run.session.status} — runId: ${run.session.runId}${unread}`;
+  return `${runIdentity(run.agent, run.session)} — runId: ${run.session.runId}${unread}`;
 }
 
 function formatRunStatus(run: OwnedRunSnapshot, options: { detailed: boolean }): string {

@@ -56,10 +56,12 @@ function response(command, success = true, extra = {}) {
 }
 
 function assistant(text, stopReason = "stop") {
+  const model = scenario === "no-model" ? {} : { provider: "fake", model: scenario === "model-change" ? `turn-model-${promptCount}` : "start-model" };
   return {
     type: "message_end",
     message: {
       role: "assistant",
+      ...model,
       content: [{ type: "text", text }],
       stopReason,
       usage: { input: 10, output: 3, totalTokens: 13, cost: { total: 0.001 } },
@@ -107,6 +109,7 @@ function handle(command) {
         sessionId: resumedSessionHeader?.id ?? "fake-session",
         sessionFile: resumedSessionFile ?? `${process.cwd()}/.pi/sessions/fake.jsonl`,
         isStreaming: false,
+        ...(scenario === "no-model" ? {} : { model: { provider: "fake", id: "start-model", name: "Fake" } }),
         thinkingLevel: "medium",
         steeringMode: "one-at-a-time",
         followUpMode: "one-at-a-time",

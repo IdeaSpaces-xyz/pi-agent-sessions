@@ -11,6 +11,10 @@ const MAX_ERROR_CHARS = 4_000;
 const TURN_TIMEOUT_MS = 600_000;
 const KILL_GRACE_MS = 2_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CAPABILITIES_SCHEMA = "ideaspaces.agent-run.capabilities";
+const MAX_CAPABILITIES_CHARS = 64_000;
+/** First CLI release with `agent capabilities`; named in the update instruction only. */
+const MIN_CAPABLE_CLI = "0.2.17";
 
 export interface CliControllerConfig {
   target: string;
@@ -41,6 +45,8 @@ export class CliAgentController implements SessionController {
   private readonly cliPath: string;
   private readonly spawnImpl: typeof spawn;
   private statusValue: ProcessStatus = "idle";
+  /** What the CLI reported the runtime actually ran on the latest turn; never the requested override. */
+  private observedModel?: string;
   private child?: ChildProcess;
   private turns: TurnSnapshot[] = [];
   private pending = new Map<string, Promise<TurnSnapshot>>();
@@ -75,36 +81,47 @@ export class CliAgentController implements SessionController {
     return controller;
   }
 
+  /** The CLI states what `agent run` guarantees as data; help prose is for people and is never parsed. */
   private async verifyCliCapabilities(): Promise<void> {
     assertTargetUnchanged(this.identity);
     const isScript = /[\\/]/.test(this.cliPath) && /\.(?:[cm]?js)$/.test(this.cliPath);
-    const result = await new Promise<{ out: string; code: number }>((resolve) => {
+    const args = ["--json", "agent", "capabilities"];
+    const result = await new Promise<{ out: string; code: number; spawnError?: string }>((resolve) => {
       let out = "";
-      const child = this.spawnImpl(isScript ? process.execPath : this.cliPath,
-        isScript ? [this.cliPath, "agent", "run", "--help"] : ["agent", "run", "--help"],
-        { cwd: this.identity.root, shell: false, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      let child: ChildProcess;
+      try {
+        child = this.spawnImpl(isScript ? process.execPath : this.cliPath, isScript ? [this.cliPath, ...args] : args,
+          { cwd: this.identity.root, shell: false, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      } catch (err) {
+        resolve({ out: "", code: 1, spawnError: errorText(err) });
+        return;
+      }
       const timer = setTimeout(() => signalTree(child, "SIGKILL"), 10_000);
-      child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
-      child.stdout?.on("data", (chunk: string) => { out = (out + chunk).slice(0, 16_000); });
-      child.stderr?.on("data", (chunk: string) => { out = (out + chunk).slice(0, 16_000); });
-      child.once("error", () => { clearTimeout(timer); resolve({ out: "", code: 1 }); });
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        out += chunk;
+        if (out.length > MAX_CAPABILITIES_CHARS) signalTree(child, "SIGKILL");
+      });
+      child.once("error", (err) => { clearTimeout(timer); resolve({ out: "", code: 1, spawnError: err.message }); });
       child.once("close", (code) => { clearTimeout(timer); resolve({ out, code: code ?? 1 }); });
     });
-    const required = this.config.runtime === "pi" ? ["--pi-trust", "--ext", "--skill"] :
-      ["--read-only", ...(this.config.effort ? ["--claude-effort"] : [])];
-    const missing = required.find((flag) => !result.out.includes(flag));
-    if (result.code !== 0 || missing) {
-      throw new Error(`CLI does not support ${missing ?? required[0]}; update the IdeaSpaces CLI before launching this POV.`);
+    if (result.spawnError) {
+      throw new Error(`Could not run the IdeaSpaces CLI (${this.cliPath}): ${result.spawnError}. Install it or set IS_CLI_PATH before launching this POV.`);
     }
-    if (this.config.runtime === "pi" && !result.out.includes("skill discovery is disabled")) {
-      throw new Error("CLI lacks Pi child skill isolation; update IdeaSpaces CLI to 0.2.1 or newer before launching this POV.");
+    const features = result.code === 0 && result.out.length <= MAX_CAPABILITIES_CHARS ? parseCapabilities(result.out) : undefined;
+    if (!features) {
+      throw new Error(`The IdeaSpaces CLI (${this.cliPath}) does not report agent-run capabilities; update @ideaspaces/cli to ${MIN_CAPABLE_CLI} or newer before launching this POV.`);
+    }
+    const missing = requiredFeatures(this.config).filter((feature) => !features.has(feature));
+    if (missing.length) {
+      throw new Error(`The IdeaSpaces CLI (${this.cliPath}) does not guarantee ${missing.join(", ")} for ${this.config.runtime} launches; update @ideaspaces/cli before launching this POV.`);
     }
   }
 
   snapshot(): AgentSessionSnapshot {
     return {
       runId: this.runId, pid: this.child?.pid, cwd: this.identity.root,
-      status: this.statusValue, runtime: this.config.runtime, model: this.config.model,
+      status: this.statusValue, runtime: this.config.runtime, model: this.config.model, observedModel: this.observedModel,
       thinking: this.config.thinking, effort: this.config.effort,
       readOnly: this.config.runtime === "claude" ? this.config.readOnly !== false : undefined,
       sessionId: this.conversationId || undefined,
@@ -301,6 +318,8 @@ export class CliAgentController implements SessionController {
               return;
             }
             this.conversationId = id;
+            // Each turn is a fresh runtime process; its report replaces the last, including "none".
+            this.observedModel = reportedModel(event.model_observed);
             this.notify();
           }
           if (event.type === "text_delta" && typeof event.delta === "string") reply = (reply + event.delta).slice(0, maxReply);
@@ -328,6 +347,36 @@ export class CliAgentController implements SessionController {
     resolve(turn);
   }
   private notify(): void { for (const listener of this.changed) { try { listener(); } catch { /* observer */ } } }
+}
+
+function requiredFeatures(config: CliControllerConfig): string[] {
+  if (config.runtime === "pi") {
+    return ["pi.explicit-extensions", "pi.skill-isolation", "pi.trust", ...(config.thinking ? ["pi.thinking"] : [])];
+  }
+  return ["claude.permission-mode", ...(config.readOnly !== false ? ["claude.read-only"] : []),
+    ...(config.effort ? ["claude.effort"] : [])];
+}
+
+/** The feature set from `agent capabilities --json`, or undefined when it is not that document. */
+export function parseCapabilities(out: string): Set<string> | undefined {
+  let doc: unknown;
+  try { doc = JSON.parse(out); } catch { return undefined; }
+  const caps = doc as { schema?: unknown; version?: unknown; features?: unknown } | null;
+  if (caps?.schema !== CAPABILITIES_SCHEMA || typeof caps.version !== "number" || caps.version < 1 ||
+      !Array.isArray(caps.features)) return undefined;
+  return new Set(caps.features.filter((feature): feature is string => typeof feature === "string"));
+}
+
+/** A runtime-reported model id fit for display, or undefined. */
+export function reportedModel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200 || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function targetIdentity(path: string): TargetIdentity {
