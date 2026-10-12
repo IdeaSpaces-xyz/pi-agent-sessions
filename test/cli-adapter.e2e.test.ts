@@ -121,10 +121,10 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       await expect(sessions.start({ agent: pov, runtime: "claude", message: "do work", permissionMode: "bypassPermissions" }))
         .rejects.toThrow("requires readOnly:false");
       const writable = await sessions.start({ agent: pov, runtime: "claude", message: "do work",
-        readOnly: false, permissionMode: "bypassPermissions" });
+        readOnly: false, permissionMode: "acceptEdits" });
       expect((await settle(sessions, writable.run.session.runId)).reply).toBe("claude:do work");
       const lastArgs = JSON.parse(readFileSync(process.env.FAKE_CLAUDE_ARGS, "utf8").trim().split("\n").at(-1)!) as string[];
-      expect(lastArgs).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions"]));
+      expect(lastArgs).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
       expect(lastArgs).not.toContain("--tools");
     } finally {
       await sessions.shutdown();

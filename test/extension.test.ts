@@ -250,8 +250,8 @@ describe("agent_session Pi extension", () => {
     const frontend = await tool.execute("call-2", { action: "start", agent: "Frontend", message: "two" }, undefined, undefined, context);
     await waitUntil(() => api.messages.length === 2);
 
-    expect(backend.content[0].text).toMatch(/^Started Backend — (running|idle) — runId:/);
-    expect(frontend.content[0].text).toMatch(/^Started Frontend — (running|idle) — runId:/);
+    expect(backend.content[0].text).toMatch(/^Started Backend · Pi · fake\/start-model · (running|idle) — runId:/);
+    expect(frontend.content[0].text).toMatch(/^Started Frontend · Pi · fake\/start-model · (running|idle) — runId:/);
     expect(backend.content[0].text).not.toContain("Transcript:");
     expect(frontend.content[0].text).toContain("Conversation: fake-session.");
     expect(api.messages.map((item) => item.parentBusy)).toEqual([true, false]);
