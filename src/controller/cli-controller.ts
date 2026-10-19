@@ -20,6 +20,8 @@ export interface CliControllerConfig {
   target: string;
   runtime: "claude" | "pi";
   model?: string;
+  /** Name for a new Pi transcript only; never forwarded on subsequent turns. */
+  topic?: string;
   thinking?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   permissionMode?: string;
@@ -56,6 +58,8 @@ export class CliAgentController implements SessionController {
 
   constructor(private readonly config: CliControllerConfig) {
     if (config.limits?.settlementTimeoutMs !== undefined) validateLimits({ settlementTimeoutMs: config.limits.settlementTimeoutMs });
+    if (config.topic && config.runtime !== "pi") throw new Error("topic names Pi sessions only; Claude naming is not supported.");
+    if (config.topic && config.resumeConversationId) throw new Error("topic cannot rename a resumed conversation.");
     if (config.runtime === "claude" && config.permissionMode === "bypassPermissions" && config.readOnly !== false) {
       throw new Error("Claude bypassPermissions requires readOnly:false explicitly.");
     }
@@ -223,6 +227,7 @@ export class CliAgentController implements SessionController {
     const args = ["--json", "agent", "run", this.identity.root, "--runtime", this.config.runtime,
       `--message=${message}`];
     if (this.conversationId) args.push("--conversation", this.conversationId);
+    else if (this.config.topic) args.push("--topic", this.config.topic);
     if (this.config.runtime === "pi") {
       args.push("--ext", this.config.extensionPaths!.join(","));
       if (this.config.skillPaths?.length) args.push("--skill", this.config.skillPaths.join(","));
@@ -356,7 +361,7 @@ export class CliAgentController implements SessionController {
 
 function requiredFeatures(config: CliControllerConfig): string[] {
   if (config.runtime === "pi") {
-    return ["pi.explicit-extensions", "pi.skill-isolation", "pi.trust", ...(config.thinking ? ["pi.thinking"] : [])];
+    return ["pi.explicit-extensions", "pi.skill-isolation", "pi.trust", ...(config.thinking ? ["pi.thinking"] : []), ...(config.topic ? ["pi.topic"] : [])];
   }
   return ["claude.permission-mode", ...(config.readOnly !== false ? ["claude.read-only"] : []),
     ...(config.effort ? ["claude.effort"] : [])];

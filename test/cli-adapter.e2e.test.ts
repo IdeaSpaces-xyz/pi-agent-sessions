@@ -34,11 +34,16 @@ const id=args[args.indexOf('--session-id')+1];let buf='';
 process.stdin.on('data',data=>{buf+=String(data);while(buf.includes('\\n')){
   const index=buf.indexOf('\\n');const raw=buf.slice(0,index);buf=buf.slice(index+1);if(!raw)continue;
   const c=JSON.parse(raw);
-  if(c.type==='get_state')console.log(JSON.stringify({type:'response',command:'get_state',success:true,data:{sessionName:'Existing',model:{provider:'stand-in',id:'resolved-model'}}}));
+  const dir=args[args.indexOf('--session-dir')+1],file=path.join(dir,'turn_'+id+'.jsonl');
+  if(c.type==='get_state'){
+    const saved=fs.existsSync(file)?fs.readFileSync(file,'utf8').split('\\n').filter(Boolean).map(JSON.parse).filter(e=>e.type==='session_info').at(-1)?.name:null;
+    console.log(JSON.stringify({type:'response',command:'get_state',success:true,data:{sessionName:args.includes('--name')?args[args.indexOf('--name')+1]:saved,model:{provider:'stand-in',id:'resolved-model'}}}));
+  }
+  if(c.type==='set_session_name')fs.appendFileSync(file,JSON.stringify({type:'session_info',name:c.name})+'\\n');
   if(c.type==='prompt'){
     if(c.message.includes('auth_fail')){console.log(JSON.stringify({type:'response',command:'prompt',success:false,error:'Authentication failed'}));continue;}
-    const dir=args[args.indexOf('--session-dir')+1],file=path.join(dir,'turn_'+id+'.jsonl');
     fs.mkdirSync(dir,{recursive:true});if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({type:'session',id,cwd:process.cwd()})+'\\n');
+    if(args.includes('--name'))fs.appendFileSync(file,JSON.stringify({type:'session_info',name:args[args.indexOf('--name')+1]})+'\\n');
     fs.appendFileSync(file,JSON.stringify({type:'message',message:{role:'user',content:[{type:'text',text:c.message}]}})+'\\n');
     console.log(JSON.stringify({type:'response',command:'prompt',success:true}));
     console.log(JSON.stringify({type:'agent_start'}));console.log(JSON.stringify({type:'turn_start'}));
@@ -84,7 +89,7 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       resolveCliResources: () => ({ extensionPaths: [extension], skillPaths: [skills] }),
     });
     try {
-      const pi = await sessions.start({ agent: pov, runtime: "pi", model: "fake/model", thinking: "high", message: "first" });
+      const pi = await sessions.start({ agent: pov, runtime: "pi", model: "fake/model", thinking: "high", topic: "Exact Pi topic", message: "first" });
       expect((await settle(sessions, pi.run.session.runId)).reply).toBe("pi:first");
       const sent = await sessions.send({ runId: pi.run.session.runId, message: "second" });
       expect((await settle(sessions, sent.run.session.runId)).reply).toBe("pi:second");
@@ -96,8 +101,16 @@ let prompt='';process.stdin.on('data',d=>prompt+=d);process.stdin.on('end',()=>{
       expect(argv[0]).not.toContain("-a"); // saved trust, not implicit project approval
       const piId = sessions.status({ runId: pi.run.session.runId }).runs[0].session.sessionId!;
       expect(piId).toMatch(/^local-/);
+      const transcript = join(pov, ".pi", "sessions", `turn_${piId}.jsonl`);
+      expect(readFileSync(transcript, "utf8")).toContain('"name":"Exact Pi topic"');
       const piResume = await sessions.resume({ agent: pov, runtime: "pi", conversationId: piId, message: "third" });
       expect((await settle(sessions, piResume.run.session.runId)).reply).toBe("pi:third");
+      expect(readFileSync(transcript, "utf8").match(/"name":"Exact Pi topic"/g)).toHaveLength(1);
+      const unnamed = await sessions.start({ agent: pov, runtime: "pi", message: "Default first message" });
+      expect((await settle(sessions, unnamed.run.session.runId)).reply).toBe("pi:Default first message");
+      const unnamedId = sessions.status({ runId: unnamed.run.session.runId }).runs[0].session.sessionId!;
+      expect(readFileSync(join(pov, ".pi", "sessions", `turn_${unnamedId}.jsonl`), "utf8")).toContain('"name":"Default first message"');
+      await sessions.close(unnamed.run.session.runId);
       await sessions.close(pi.run.session.runId);
       await sessions.close(piResume.run.session.runId);
 

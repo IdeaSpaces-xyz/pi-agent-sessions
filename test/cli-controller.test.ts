@@ -7,7 +7,7 @@ import { CliAgentController } from "../src/controller/cli-controller.js";
 const roots: string[] = [];
 let pov: string;
 let cli: string;
-const ALL_FEATURES = ["pi.explicit-extensions", "pi.skill-isolation", "pi.trust", "pi.thinking",
+const ALL_FEATURES = ["pi.explicit-extensions", "pi.skill-isolation", "pi.trust", "pi.thinking", "pi.topic",
   "claude.read-only", "claude.effort", "claude.permission-mode", "model.requested-observed"];
 
 /** A stand-in CLI whose only behaviour is its answer to `--json agent capabilities`. */
@@ -88,6 +88,25 @@ describe("CLI fellow controller", () => {
     const argv=JSON.parse(readFileSync(join(pov,"argv.jsonl"),"utf8").trim()) as string[];
     expect(argv).toEqual(expect.arrayContaining(["--ext",cli,"--skill",join(pov,"_agent")]));
     expect(argv).not.toContain("--conversation");
+  });
+
+  it("requires Pi topic capability and forwards the name only for the first turn", async () => {
+    const old = capabilitiesCli("no-topic", capabilities(ALL_FEATURES.filter((f) => f !== "pi.topic")));
+    await expect(CliAgentController.start({ target: pov, runtime: "pi", extensionPaths: [cli], cliPath: old, topic: "Exact topic" }))
+      .rejects.toThrow("does not guarantee pi.topic");
+    expect(() => create("claude", { topic: "Exact topic" })).toThrow("Claude naming is not supported");
+    expect(() => create("pi", { topic: "Exact topic", resumeConversationId: "local-first", extensionPaths: [cli] })).toThrow("cannot rename");
+    const controller = await CliAgentController.start({ target: pov, runtime: "pi", extensionPaths: [cli], cliPath: cli, topic: "Exact topic" });
+    expect((await controller.waitForTurn(await controller.prompt("first"))).status).toBe("completed");
+    expect((await controller.waitForTurn(await controller.prompt("second"))).status).toBe("completed");
+    const argv = readFileSync(join(pov,"argv.jsonl"),"utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+    expect(argv[0]).toEqual(expect.arrayContaining(["--topic", "Exact topic"]));
+    expect(argv[0]).not.toContain("--conversation");
+    expect(argv[1]).not.toContain("--topic");
+    expect(argv[1]).toEqual(expect.arrayContaining(["--conversation", "local-first"]));
+    const plain = create("pi", { extensionPaths: [cli] });
+    expect((await plain.waitForTurn(await plain.prompt("without topic"))).status).toBe("completed");
+    expect(JSON.parse(readFileSync(join(pov,"argv.jsonl"),"utf8").trim().split("\n")[2])).not.toContain("--topic");
   });
 
   it("reports auth failure as a failed turn rather than success", async () => {
