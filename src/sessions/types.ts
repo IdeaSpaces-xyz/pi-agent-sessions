@@ -126,6 +126,8 @@ export interface StartSessionInput {
   effort?: CliControllerConfig["effort"];
   readOnly?: boolean;
   permissionMode?: string;
+  /** Optional turn ceiling in ms; 0 or unset means no timeout. CLI kills process tree; resident Pi requests abort. */
+  timeoutMs?: number;
 }
 
 export interface ListConversationsInput {
@@ -143,6 +145,8 @@ export interface ResumeSessionInput {
   effort?: CliControllerConfig["effort"];
   readOnly?: boolean;
   permissionMode?: string;
+  /** Optional turn ceiling in ms; 0 or unset means no timeout. CLI kills process tree; resident Pi requests abort. */
+  timeoutMs?: number;
 }
 
 export type ListConversationsResult = AgentConversationCatalog;
@@ -151,6 +155,8 @@ export interface SendSessionInput {
   runId: string;
   message: string;
   busyMode?: "steer" | "followUp";
+  /** Optional turn ceiling in ms for a new turn; not available when steering a busy run. */
+  timeoutMs?: number;
 }
 
 export interface StatusOptions {

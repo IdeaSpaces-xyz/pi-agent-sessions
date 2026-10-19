@@ -2,13 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentSessionSnapshot, ProcessStatus, TurnSnapshot, TurnSettledListener, StateChangedListener } from "./types.js";
+import type { AgentSessionSnapshot, ProcessStatus, PromptOptions, TurnSnapshot, TurnSettledListener, StateChangedListener } from "./types.js";
 import type { SessionController } from "../sessions/types.js";
+import { validateLimits } from "./config.js";
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_REPLY_CHARS = 12_000;
 const MAX_ERROR_CHARS = 4_000;
-const TURN_TIMEOUT_MS = 600_000;
 const KILL_GRACE_MS = 2_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CAPABILITIES_SCHEMA = "ideaspaces.agent-run.capabilities";
@@ -55,6 +55,7 @@ export class CliAgentController implements SessionController {
   private active?: { stop: (reason: "interrupted" | "closed" | "timeout") => void; done: Promise<TurnSnapshot> };
 
   constructor(private readonly config: CliControllerConfig) {
+    if (config.limits?.settlementTimeoutMs !== undefined) validateLimits({ settlementTimeoutMs: config.limits.settlementTimeoutMs });
     if (config.runtime === "claude" && config.permissionMode === "bypassPermissions" && config.readOnly !== false) {
       throw new Error("Claude bypassPermissions requires readOnly:false explicitly.");
     }
@@ -167,7 +168,8 @@ export class CliAgentController implements SessionController {
     assertTargetUnchanged(this.identity);
   }
 
-  async prompt(message: string): Promise<string> {
+  async prompt(message: string, options?: PromptOptions): Promise<string> {
+    if (options?.timeoutMs !== undefined) validateLimits({ settlementTimeoutMs: options.timeoutMs });
     if (this.statusValue !== "idle") throw new Error(`Cannot send to a child in ${this.statusValue} state`);
     if (Buffer.byteLength(message) > 8 * 1024) throw new Error("CLI launch message exceeds 8 KiB; provide a smaller instruction or point to a local Note.");
     assertTargetUnchanged(this.identity);
@@ -176,7 +178,7 @@ export class CliAgentController implements SessionController {
     this.turns.push({ operationId, status: "running", startedAt });
     this.statusValue = "running";
     this.notify();
-    const done = this.runTurn(operationId, message, startedAt);
+    const done = this.runTurn(operationId, message, startedAt, options?.timeoutMs);
     this.pending.set(operationId, done);
     return operationId;
   }
@@ -217,7 +219,7 @@ export class CliAgentController implements SessionController {
     this.notify();
   }
 
-  private runTurn(operationId: string, message: string, startedAt: string): Promise<TurnSnapshot> {
+  private runTurn(operationId: string, message: string, startedAt: string, perTurnTimeoutMs?: number): Promise<TurnSnapshot> {
     const args = ["--json", "agent", "run", this.identity.root, "--runtime", this.config.runtime,
       `--message=${message}`];
     if (this.conversationId) args.push("--conversation", this.conversationId);
@@ -240,7 +242,7 @@ export class CliAgentController implements SessionController {
     const maxLine = limits?.maxLineBytes ?? MAX_LINE_BYTES;
     const maxReply = limits?.maxReplyChars ?? MAX_REPLY_CHARS;
     const maxError = limits?.maxStderrBytes ?? MAX_ERROR_CHARS;
-    const timeout = limits?.settlementTimeoutMs ?? TURN_TIMEOUT_MS;
+    const timeout = perTurnTimeoutMs !== undefined ? perTurnTimeoutMs : (limits?.settlementTimeoutMs ?? 0);
 
     return new Promise<TurnSnapshot>((resolve) => {
       let child: ChildProcess;
@@ -273,12 +275,15 @@ export class CliAgentController implements SessionController {
       };
       const onParentExit = () => signalTree(child, "SIGKILL");
       process.once("exit", onParentExit);
-      const deadline = setTimeout(() => stop("timeout"), timeout);
+      let deadline: NodeJS.Timeout | undefined;
+      if (timeout > 0) {
+        deadline = setTimeout(() => stop("timeout"), timeout);
+      }
       const done = new Promise<TurnSnapshot>((doneResolve) => {
         const settle = (code: number | null, signal: NodeJS.Signals | null) => {
           if (ended) return;
           ended = true;
-          clearTimeout(deadline);
+          if (deadline) clearTimeout(deadline);
           if (killTimer) clearTimeout(killTimer);
           process.off("exit", onParentExit);
           this.child = undefined;

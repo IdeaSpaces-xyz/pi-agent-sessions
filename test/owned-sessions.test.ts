@@ -71,10 +71,13 @@ class FakeController implements SessionController {
     };
   }
 
-  async prompt(_message: string, _options?: PromptOptions): Promise<string> {
+  readonly promptOptions: Array<PromptOptions | undefined> = [];
+
+  async prompt(_message: string, options?: PromptOptions): Promise<string> {
     const operationId = `${this.runId}:op-${this.turns.length + 1}`;
     this.turns.push({ operationId, status: "running", startedAt: new Date().toISOString() });
     this.completions.set(operationId, deferred<TurnSnapshot>());
+    this.promptOptions.push(options);
     this.status = "running";
     return operationId;
   }
@@ -470,6 +473,38 @@ describe("OwnedAgentSessions", () => {
     expect(writable.operation?.status).toBe("running");
     expect(claudeControllerConfigs[3]).toMatchObject({ runtime: "claude", model: "opus", effort: "high",
       readOnly: false, permissionMode: "bypassPermissions" });
+  });
+
+  it("forwards opt-in per-turn timeoutMs on start, resume, and send and validates bounds", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    const target = join(root, "Backend");
+    const sessionDir = join(root, "sessions");
+    await mkdir(sessionDir);
+    await writeFile(join(sessionDir, "conversation.jsonl"), [
+      JSON.stringify({ type: "session", version: 3, id: "space-loop", timestamp: "2026-09-08T10:00:00.000Z", cwd: target }),
+      JSON.stringify({ type: "message", id: "one", parentId: null, timestamp: "2026-09-08T10:00:01.000Z", message: { role: "user", content: "Discuss Space Loop" } }),
+      "",
+    ].join("\n"));
+    const { sessions, controllers } = harness(root, { sessionDir });
+
+    // Validate bounds
+    await expect(sessions.start({ agent: "Backend", message: "hi", timeoutMs: -1 })).rejects.toThrow("timeoutMs");
+    await expect(sessions.start({ agent: "Backend", message: "hi", timeoutMs: 100_000_000 })).rejects.toThrow("timeoutMs");
+
+    // Start with timeoutMs
+    const started = await sessions.start({ agent: "Backend", message: "hi", timeoutMs: 5_000 });
+    expect(controllers[0].promptOptions).toEqual([{ timeoutMs: 5_000 }]);
+    controllers[0].settle(started.operation!.operationId, "completed", "done 1");
+
+    // Send with timeoutMs
+    const sent = await sessions.send({ runId: started.run.session.runId, message: "next", timeoutMs: 12_000 });
+    expect(controllers[0].promptOptions).toEqual([{ timeoutMs: 5_000 }, { timeoutMs: 12_000 }]);
+    controllers[0].settle(sent.operation!.operationId, "completed", "done 2");
+
+    // Resume with timeoutMs
+    await sessions.resume({ agent: "Backend", conversationId: "space-loop", message: "resumed turn", timeoutMs: 8_000 });
+    expect(controllers[1].promptOptions).toEqual([{ timeoutMs: 8_000 }]);
   });
 
   it("fails before spawn if target does not exist or lacks contract", async () => {

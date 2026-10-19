@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +40,12 @@ if (args.includes('--message=fail')) {
   process.exit(1);
 }
 if (args.includes('--message=hang')) {
+  process.on('SIGTERM', () => process.exit(0));
+  setInterval(() => {}, 100);
+} else if (args.includes('--message=hang-after-start')) {
+  const id=args.includes('--conversation')?args[args.indexOf('--conversation')+1]:'44444444-4444-4444-8444-444444444444';
+  fs.writeFileSync(path.join(__dirname,'transcript.jsonl'), JSON.stringify({type:'session',id})+'\\n');
+  console.log(JSON.stringify({type:'message_start', conversation_id:id, model_observed:'fake-model'}));
   process.on('SIGTERM', () => process.exit(0));
   setInterval(() => {}, 100);
 } else {
@@ -166,9 +172,74 @@ describe("CLI fellow controller", () => {
     expect(controller.snapshot().observedModel).toBeUndefined();
   });
 
+  it("does not time out a default run at 600s", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = create();
+      const op = await controller.prompt("hang");
+      // Advance timers well past the old 600s (10 min) standing deadline
+      await vi.advanceTimersByTimeAsync(650_000);
+      const snapshot = controller.snapshot();
+      const turn = snapshot.turns.find((t) => t.operationId === op);
+      expect(turn?.status).toBe("running");
+      expect(snapshot.status).toBe("running");
+      // Settle cleanly with interrupt
+      await controller.interrupt();
+      expect((await controller.waitForTurn(op)).status).toBe("interrupted");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates a hanging run when explicit ceiling is supplied via limits or per-turn options", async () => {
+    const limitedController = create("claude", { limits: { settlementTimeoutMs: 50 } });
+    const op1 = await limitedController.prompt("hang");
+    const turn1 = await limitedController.waitForTurn(op1);
+    expect(turn1).toMatchObject({ status: "failed", error: "CLI turn timed out after 50ms" });
+    await limitedController.close();
+
+    const perTurnController = create();
+    const op2 = await perTurnController.prompt("hang", { timeoutMs: 60 });
+    const turn2 = await perTurnController.waitForTurn(op2);
+    expect(turn2).toMatchObject({ status: "failed", error: "CLI turn timed out after 60ms" });
+    await perTurnController.close();
+  });
+
+  it("interrupts an unlimited run cleanly and preserves conversation id for subsequent resume/prompt", async () => {
+    const controller = create();
+    const op1 = await controller.prompt("hang-after-start");
+    // Wait for message_start to be received
+    await waitUntil(() => controller.conversationId === "44444444-4444-4444-8444-444444444444");
+    expect(controller.snapshot().sessionId).toBe("44444444-4444-4444-8444-444444444444");
+
+    const interrupted = await controller.interrupt();
+    expect(interrupted?.status).toBe("interrupted");
+    expect((await controller.waitForTurn(op1)).status).toBe("interrupted");
+    expect(controller.snapshot().status).toBe("idle");
+    expect(controller.conversationId).toBe("44444444-4444-4444-8444-444444444444");
+    expect(readFileSync(join(pov, "transcript.jsonl"), "utf8")).toContain(controller.conversationId);
+
+    // Next turn should resume on the same conversation id and complete
+    const op2 = await controller.prompt("second");
+    const turn2 = await controller.waitForTurn(op2);
+    expect(turn2.status).toBe("completed");
+    expect(turn2.reply).toBe("reply");
+    const argv = readFileSync(join(pov, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+    expect(argv[1]).toEqual(expect.arrayContaining(["--conversation", "44444444-4444-4444-8444-444444444444"]));
+    await controller.close();
+  });
+
   it("rejects missing Agreement and invalid Claude conversation id before spawn", () => {
     expect(() => create("claude", { resumeConversationId: "typo" })).toThrow("UUID");
     rmSync(join(pov, "_agent", "agreement.md"));
     expect(() => create()).toThrow();
   });
 });
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Condition did not become true");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

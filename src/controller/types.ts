@@ -23,6 +23,7 @@ export interface PiExecutableConfig {
 export interface ControllerLimits {
   startupTimeoutMs: number;
   requestTimeoutMs: number;
+  /** Settlement timeout in milliseconds. 0 means no standing timeout (unlimited). */
   settlementTimeoutMs: number;
   dialogTimeoutMs: number;
   closeGraceMs: number;
@@ -176,6 +177,8 @@ export interface AgentSessionSnapshot {
 
 export interface PromptOptions {
   streamingBehavior?: "steer" | "followUp";
+  /** Optional per-turn ceiling (ms). 0 disables it. CLI turns terminate the process tree; resident RPC turns request abort, which depends on the child responding. */
+  timeoutMs?: number;
 }
 
 export type TurnSettledListener = (turn: TurnSnapshot) => void;

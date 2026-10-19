@@ -11,7 +11,7 @@ import { resolvePiLaunch } from "./executable.js";
 export const DEFAULT_LIMITS: Readonly<ControllerLimits> = Object.freeze({
   startupTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
-  settlementTimeoutMs: 10 * 60_000,
+  settlementTimeoutMs: 0,
   dialogTimeoutMs: 10 * 60_000,
   closeGraceMs: 5_000,
   killGraceMs: 2_000,
@@ -27,7 +27,7 @@ export const DEFAULT_LIMITS: Readonly<ControllerLimits> = Object.freeze({
 const LIMIT_BOUNDS: Record<keyof ControllerLimits, readonly [number, number]> = {
   startupTimeoutMs: [10, 30_000],
   requestTimeoutMs: [10, 120_000],
-  settlementTimeoutMs: [10, 3_600_000],
+  settlementTimeoutMs: [0, 86_400_000],
   dialogTimeoutMs: [10, 3_600_000],
   closeGraceMs: [0, 30_000],
   killGraceMs: [10, 10_000],

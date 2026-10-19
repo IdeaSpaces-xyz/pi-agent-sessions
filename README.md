@@ -1,13 +1,13 @@
 # pi-agent-sessions
 
-Bounded fellow sessions from Pi. `agent_session` launches a selected local Agreement POV under Pi or Claude via the IdeaSpaces CLI; configured collection names retain the existing resident Pi RPC controller. A CLI turn resumes by conversation id in a fresh process, not by attaching to the old process. Parent transcripts and mounts are never copied into the child.
+Fellow sessions with bounded resources and opt-in turn time ceilings from Pi. `agent_session` launches a selected local Agreement POV under Pi or Claude via the IdeaSpaces CLI; configured collection names retain the existing resident Pi RPC controller. A CLI turn resumes by conversation id in a fresh process, not by attaching to the old process. Parent transcripts and mounts are never copied into the child.
 
 ## Install
 
 The controller supports Node.js 20 or newer. Running it as a package follows Pi's own runtime requirement; Pi `0.85.1` requires Node.js 22.19 or newer.
 
 ```bash
-pi install npm:@ideaspaces/pi-agent-sessions@0.2.5
+pi install npm:@ideaspaces/pi-agent-sessions@0.2.6
 ```
 
 For cross-runtime or explicit-path launches, install `@ideaspaces/cli@0.2.17` or newer separately or point `IS_CLI_PATH` at its built `bundle/ideaspaces.js`. Before the first turn the package asks the CLI `agent capabilities --json` for what `agent run` guarantees — Pi extension and skill isolation and trust, Claude read-only, effort and permission mode — and refuses to launch, naming the missing guarantee, when the CLI cannot answer or lacks one. It never reads `--help`. CLI-backed Pi launches carry only the parent's *active trusted* extension paths and loaded skill paths through explicit `--ext`/`--skill`; an installed but inactive package, the target repo, and `IDEASPACES_PI_EXTENSIONS` do not select child executables. If no active parent extension is available, launch refuses with a remedy. Claude launches use the person's Claude Code installation and sign-in. A folder carrying its own `_agent/agreement.md` can be selected by absolute or relative path with **no collection configuration**.
@@ -52,6 +52,8 @@ Ask Pi to list or consult a fellow agent. The model uses one tool with eight act
 | `close` | Idempotently close the owned process tree. |
 
 Claude CLI turns default to restricted Read/Grep/Glob and no MCP tools. To write, pass `readOnly:false`; `bypassPermissions` additionally requires that explicit choice. Read-only is a tool restriction, not a filesystem sandbox. `effort` accepts Claude Code's supported low/medium/high/xhigh/max levels; Pi's `thinking` is separate. A collection agent name addresses a canonical folder; an explicit path addresses **any** local IdeaSpace repo with its own regular Agreement. Neither a collection nor an agent kind is required for the path. An explicit Pi path and all Claude runs use CLI `agent run`; named collection Pi runs retain the resident RPC controller. CLI-backed first turns omit `--conversation`: the CLI mints the id, which is captured from its `message_start` event and used for exact follow-up and resume. The Pi controller supports queued busy turns and a durable topic; CLI turns do not. `conversationId` addresses the selected runtime's persisted transcript, while `runId` addresses only this parent's controller. On CLI resume, the conversation must exist at the same POV; an unknown id fails rather than creating a new transcript. `conversations` returns names, bounded first-message previews, dates, and message counts, never transcript paths or bodies. Its optional query matches names and first-message previews; semantic and full-transcript search are not included.
+
+`start`, `resume`, and `send` to an idle run accept optional `timeoutMs` (0–86,400,000; omitted or 0 means no deadline). It applies only to the new turn, not later sends. CLI-backed turns have **no default 10-minute deadline**; at a positive ceiling the controller signals the CLI process tree with SIGTERM, escalates to SIGKILL after the kill grace period, and reports a failed turn with `CLI turn timed out after …ms`. An interrupted turn reports `interrupted` instead; a CLI conversation id reported before termination is kept for follow-up/resume, and the persisted runtime transcript is not deleted. Resident Pi turns request RPC abort at a positive ceiling and report `interrupted` when the runtime settles; this is **cooperative, not a guaranteed hard process termination**. Manual `interrupt`, parent shutdown, request/dialog timeouts and bounded output still apply without a turn ceiling. A timeout cannot be added retroactively to a busy `steer`/`followUp` send; interrupt first or wait for the next idle turn.
 
 Resident Pi `resume` accepts the exact catalog conversation id and takes an exclusive package lease before opening `pi --session`. CLI-backed turns revalidate the selected Agreement before every spawn, use saved Pi project-resource trust unless explicitly approved, forward a same-or-narrower active parent Pi resource set, and bound output, failure, and process teardown. Their `resume` requires an existing conversation at that POV; it does **not** lease a live CLI session or keep it running after parent exit. Live detachment is a separate follow-on.
 
@@ -121,7 +123,7 @@ Trust is always a separate caller decision:
 
 Process state is observable as `starting`, `idle`, `running`, `waiting_for_input`, `closing`, `closed`, or `crashed`. Turn outcomes are independently recorded as `rejected`, `completed`, `failed`, or `interrupted`.
 
-`interrupt()` clears queued messages before aborting. `close()` cancels outstanding dialogs, settles active work within a bound, closes stdin, and escalates to process-tree termination when needed. All retained observations, replies, stderr, requests, and waits are bounded.
+`interrupt()` clears queued messages before aborting. `close()` cancels outstanding dialogs, settles active work within a bound, closes stdin, and escalates to process-tree termination when needed. `ControllerLimits.settlementTimeoutMs` defaults to 0 (no standing wait/CLI-turn deadline); other request, startup, dialog, teardown, and output bounds remain in force. All retained observations, replies, stderr, and requests are bounded.
 
 ## Development
 

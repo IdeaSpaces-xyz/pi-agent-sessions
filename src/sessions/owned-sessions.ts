@@ -109,6 +109,7 @@ export class OwnedAgentSessions {
       validateMessage(input.message);
       validateTarget(input.agent);
       validateTopic(input.topic);
+      validateTimeout(input.timeoutMs);
       const target = await this.resolveTarget(input.agent);
       const liveCount = [...this.runs.values()].filter((run) => isLive(run.controller.snapshot())).length;
       const maxChildren = validateLimits(this.config.controller?.limits).maxChildren;
@@ -145,7 +146,7 @@ export class OwnedAgentSessions {
         });
       }
       const run = this.registerRun(target.name, controller);
-      const operation = await this.beginPrompt(run, input.message);
+      const operation = await this.beginPrompt(run, input.message, input.timeoutMs);
       this.hooks.stateChanged?.();
       return { run: this.snapshotRun(run, false), operation };
     });
@@ -157,6 +158,7 @@ export class OwnedAgentSessions {
       if ((this.config.depth ?? 0) > 0) throw new Error("Nested agent sessions are disabled in this release");
       validateMessage(input.message);
       validateTarget(input.agent);
+      validateTimeout(input.timeoutMs);
       const target = await this.resolveTarget(input.agent);
       const liveCount = [...this.runs.values()].filter((run) => isLive(run.controller.snapshot())).length;
       const maxChildren = validateLimits(this.config.controller?.limits).maxChildren;
@@ -222,7 +224,7 @@ export class OwnedAgentSessions {
 
       const run = this.registerRun(target.name, controller, releaseLease);
       try {
-        const operation = await this.beginPrompt(run, input.message);
+        const operation = await this.beginPrompt(run, input.message, input.timeoutMs);
         this.hooks.stateChanged?.();
         return { run: this.snapshotRun(run, false), operation };
       } catch (error) {
@@ -240,14 +242,18 @@ export class OwnedAgentSessions {
     return this.serializeRun(run, async () => {
       this.requireAccepting();
       validateMessage(input.message);
+      validateTimeout(input.timeoutMs);
       const snapshot = run.controller.snapshot();
       if (snapshot.status === "idle") {
-        const operation = await this.beginPrompt(run, input.message);
+        const operation = await this.beginPrompt(run, input.message, input.timeoutMs);
         return { run: this.snapshotRun(run, false), operation };
       }
       if (snapshot.status === "running" || snapshot.status === "waiting_for_input") {
         if (!input.busyMode) {
           throw new Error("The child is busy; set busyMode to steer or followUp");
+        }
+        if (input.timeoutMs !== undefined) {
+          throw new Error("timeoutMs applies only to a new turn; cannot change the ceiling of a busy turn");
         }
         const active = latestActiveTurn(snapshot);
         if (!active) throw new Error("The child reports busy without an active operation");
@@ -399,10 +405,10 @@ export class OwnedAgentSessions {
     return discoverAgentRoster(this.requireCollectionRoot(), this.config.discovery);
   }
 
-  private async beginPrompt(run: ManagedRun, message: string): Promise<TurnSnapshot> {
+  private async beginPrompt(run: ManagedRun, message: string, timeoutMs?: number): Promise<TurnSnapshot> {
     const epoch = this.branchEpoch;
     try {
-      const operationId = await run.controller.prompt(message);
+      const operationId = await run.controller.prompt(message, timeoutMs !== undefined ? { timeoutMs } : undefined);
       run.operationEpochs.set(operationId, epoch);
       const operation = findTurn(run.controller.snapshot(), operationId);
       const pendingSettlement = run.pendingSettlements.get(operationId);
@@ -633,6 +639,13 @@ function validateTopic(topic: string | undefined): void {
     throw new Error("topic must be non-empty text without NUL bytes");
   }
   if (topic.trim().length > 200) throw new Error("topic cannot exceed 200 characters");
+}
+
+function validateTimeout(timeoutMs: number | undefined): void {
+  if (timeoutMs === undefined) return;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 86_400_000) {
+    throw new Error("timeoutMs must be an integer between 0 and 86400000 (24h)");
+  }
 }
 
 function errorMessage(error: unknown): string {
