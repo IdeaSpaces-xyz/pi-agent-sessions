@@ -118,7 +118,7 @@ export class OwnedAgentSessions {
       const runtime = input.runtime ?? "pi";
       validateRuntimeOptions(runtime, input.thinking, input.effort, input.readOnly, input.permissionMode);
       const useCli = runtime === "claude" || isExplicitTarget(input.agent, this.config.collectionRoot);
-      if (useCli && input.topic) throw new Error("CLI launches name the conversation from its first message; topic is available only to resident Pi runs.");
+      if (runtime === "claude" && input.topic !== undefined) throw new Error("topic names Pi sessions only; Claude naming is not supported.");
       let controller: SessionController;
       if (useCli) {
         const resources = runtime === "pi" ? this.requireParentResources() : undefined;
@@ -132,6 +132,7 @@ export class OwnedAgentSessions {
           readOnly: input.readOnly,
           permissionMode: input.permissionMode,
           trust: this.config.approveProjectResources ? "explicit" : "saved",
+          topic: input.topic?.trim(),
           limits: this.config.controller?.limits,
           env: this.config.controller?.env,
         });

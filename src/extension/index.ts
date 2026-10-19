@@ -43,7 +43,7 @@ const AgentSessionParams = Type.Object({
   runId: Type.Optional(Type.String({ description: "Owned run id; required for send, interrupt, and close" })),
   message: Type.Optional(Type.String({ description: "Message for start or send" })),
   query: Type.Optional(Type.String({ description: "Optional bounded name/first-message query for conversations" })),
-  topic: Type.Optional(Type.String({ description: "Optional durable Pi session name for start" })),
+  topic: Type.Optional(Type.String({ description: "Optional durable name for a new Pi session (resident or CLI-launched); Claude does not support topic" })),
   conversationId: Type.Optional(Type.String({ description: "Exact catalog conversation id; required for resume" })),
   busyMode: Type.Optional(BusyModeSchema),
   runtime: Type.Optional(RuntimeSchema),

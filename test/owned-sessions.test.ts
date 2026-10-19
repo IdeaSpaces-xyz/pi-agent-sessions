@@ -460,9 +460,11 @@ describe("OwnedAgentSessions", () => {
     });
     expect(claudeControllerConfigs[1].resumeConversationId).toBe("cld-conv-1234");
 
-    const piRun = await sessions.start({ agent: space, runtime: "pi", model: "openai/gpt", thinking: "high", message: "Run Pi through CLI" });
+    await expect(sessions.start({ agent: space, runtime: "claude", topic: "Not Claude", message: "No child" }))
+      .rejects.toThrow("Claude naming is not supported");
+    const piRun = await sessions.start({ agent: space, runtime: "pi", model: "openai/gpt", thinking: "high", topic: "Explicit Pi name", message: "Run Pi through CLI" });
     expect(piRun.operation?.status).toBe("running");
-    expect(claudeControllerConfigs[2]).toMatchObject({ runtime: "pi", model: "openai/gpt", thinking: "high", target: realpathSync(space),
+    expect(claudeControllerConfigs[2]).toMatchObject({ runtime: "pi", model: "openai/gpt", thinking: "high", topic: "Explicit Pi name", target: realpathSync(space),
       extensionPaths: ["/trusted/parent-extension.ts"], skillPaths: ["/trusted/skill"] });
     await expect(sessions.start({ agent: space, runtime: "claude", message: "do work", permissionMode: "bypassPermissions" }))
       .rejects.toThrow("requires readOnly:false");
