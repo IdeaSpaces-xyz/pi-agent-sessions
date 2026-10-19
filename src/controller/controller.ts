@@ -171,6 +171,14 @@ export class PersistentRpcController {
     this.activeTurn = turn;
     this.status = "running";
     this.notifyStateChanged();
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      const turnTimer = setTimeout(() => {
+        if (this.activeTurn === turn && !isTurnOutcome(turn.status)) {
+          void this.interrupt().catch(() => undefined);
+        }
+      }, options.timeoutMs);
+      turn.completion.finally(() => clearTimeout(turnTimer));
+    }
     try {
       const response = await this.sendRpc({
         type: "prompt",
@@ -212,6 +220,7 @@ export class PersistentRpcController {
     const turn = this.turns.find((candidate) => candidate.operationId === operationId);
     if (!turn) throw new Error(`Unknown operation: ${operationId}`);
     if (isTurnOutcome(turn.status)) return stripTurnInternals(turn);
+    if (timeoutMs <= 0) return turn.completion;
     return withTimeout(turn.completion, timeoutMs, `Timed out waiting for operation ${operationId}`);
   }
 
@@ -959,7 +968,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  if (timeoutMs === 0) throw new Error(message);
+  if (timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([

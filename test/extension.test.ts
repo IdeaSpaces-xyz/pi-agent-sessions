@@ -340,6 +340,30 @@ describe("agent_session Pi extension", () => {
     expect(commands).toContainEqual({ type: "extension_ui_response", id: "dialog-1", cancelled: true });
   });
 
+  it("accepts an opt-in ceiling on start and unlimited idle send while retaining the transcript pointer", async () => {
+    const root = tempRoot();
+    await makeAgent(root, "Backend");
+    configure(root, "hold");
+    const api = new FakeExtensionApi();
+    const context = fakeContext(api);
+    agentSessionsExtension(api as unknown as ExtensionAPI);
+    await api.emit("session_start", { type: "session_start", reason: "startup" }, context);
+    const tool = api.tools.find((candidate) => candidate.name === "agent_session");
+    const started = await tool.execute("call-1", { action: "start", agent: "Backend", message: "work", timeoutMs: 40 }, undefined, undefined, context);
+    const runId = started.details.operation.run.session.runId as string;
+    await waitUntil(() => api.messages.length === 1);
+    expect(api.messages[0].message.content).toContain("· interrupted · runId:");
+    expect(api.entries).toContainEqual(expect.objectContaining({ customType: "agent-session-pointer",
+      data: expect.objectContaining({ sessionId: "fake-session" }) }));
+    const sent = await tool.execute("call-2", { action: "send", runId, message: "continue", timeoutMs: 0 }, undefined, undefined, context);
+    expect(sent.details.operation.operation.status).toBe("running");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(api.messages).toHaveLength(1);
+    await tool.execute("call-3", { action: "interrupt", runId }, undefined, undefined, context);
+    await waitUntil(() => api.messages.length === 2);
+    await api.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
+  });
+
   it("holds a reply after branch movement and retrieves it through status", async () => {
     const root = tempRoot();
     await makeAgent(root, "Backend");

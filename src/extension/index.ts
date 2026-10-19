@@ -55,6 +55,11 @@ const AgentSessionParams = Type.Object({
   includeEvents: Type.Optional(Type.Boolean({
     description: "Diagnostic only: include transcript, errors, and aggregated bounded event counts in status",
   })),
+  timeoutMs: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 86_400_000,
+    description: "Optional ceiling for a new turn (start, resume, or idle send), in ms. Off by default; 0 disables it. CLI kills the process tree at the ceiling; resident Pi requests abort (not guaranteed hard termination). Not supported when steering/following up a busy turn.",
+  })),
 });
 
 export interface AgentSessionToolInput {
@@ -73,6 +78,7 @@ export interface AgentSessionToolInput {
   readOnly?: boolean;
   permissionMode?: "acceptEdits" | "auto" | "bypassPermissions" | "manual" | "dontAsk" | "plan";
   includeEvents?: boolean;
+  timeoutMs?: number;
 }
 
 interface ToolResult {
@@ -245,6 +251,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             effort: params.effort,
             readOnly: params.readOnly,
             permissionMode: params.permissionMode,
+            timeoutMs: params.timeoutMs,
           });
           return result(formatOperation("Started", started), { operation: started });
         }
@@ -263,6 +270,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
             effort: params.effort,
             readOnly: params.readOnly,
             permissionMode: params.permissionMode,
+            timeoutMs: params.timeoutMs,
           });
           return result(formatOperation("Resumed", resumed), { operation: resumed });
         }
@@ -270,7 +278,7 @@ export default function agentSessionsExtension(pi: ExtensionAPI): void {
           const runId = required(params.runId, "agent_session send requires runId");
           const message = required(params.message, "agent_session send requires message");
           onUpdate?.(progress(`Sending to ${runId}…`));
-          const sent = await sessions.send({ runId, message, busyMode: params.busyMode });
+          const sent = await sessions.send({ runId, message, busyMode: params.busyMode, timeoutMs: params.timeoutMs });
           return result(formatOperation("Sent", sent), { operation: sent });
         }
         case "status": {

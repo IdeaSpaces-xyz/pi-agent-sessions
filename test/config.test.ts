@@ -100,7 +100,9 @@ describe("configuration", () => {
     ).toEqual({ mode: "explicit" });
   });
 
-  it("validates every configured bound", () => {
+  it("validates every configured bound, including unlimited settlement", () => {
+    expect(validateLimits().settlementTimeoutMs).toBe(0);
+    expect(validateLimits({ settlementTimeoutMs: 0 }).settlementTimeoutMs).toBe(0);
     for (const [key, defaultValue] of Object.entries(DEFAULT_LIMITS) as Array<[keyof ControllerLimits, number]>) {
       expect(validateLimits({ [key]: defaultValue })[key]).toBe(defaultValue);
       expect(() => validateLimits({ [key]: -1 })).toThrow(key);

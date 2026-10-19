@@ -183,6 +183,21 @@ describe("PersistentRpcController", () => {
     expect(commands).toEqual(["get_state", "prompt", "steer", "follow_up", "clear_queue", "abort"]);
   });
 
+  it("does not time out resident turns by default, and requests abort for an explicit ceiling", async () => {
+    const unlimited = await start("hold", { limits: { settlementTimeoutMs: 0 } });
+    const operationId = await unlimited.prompt("keep working");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(unlimited.snapshot().turns[0].status).toBe("running");
+    expect((await unlimited.interrupt())?.status).toBe("interrupted");
+    expect((await unlimited.waitForTurn(operationId)).status).toBe("interrupted");
+
+    const limited = await start("hold", { limits: { settlementTimeoutMs: 0 } });
+    const limitedId = await limited.prompt("stop after ceiling", { timeoutMs: 40 });
+    const settled = await limited.waitForTurn(limitedId);
+    expect(settled).toMatchObject({ status: "interrupted", stopReason: "aborted" });
+    expect(limited.snapshot().sessionId).toBe("fake-session");
+  });
+
   it("correlates and validates all four supported dialog methods", async () => {
     const target = tempRoot();
     const commandRecord = join(target, "dialog-commands.jsonl");
